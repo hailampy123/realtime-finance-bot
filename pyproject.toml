@@ -32,6 +32,9 @@ include = ["ingest*", "backfill*"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# ruff formats Python inside Markdown fences. docs/ holds design specs and
+# implementation plans whose snippets are illustrative — some deliberately
+# incomplete or invalid — so they are not lintable source.
 extend-exclude = ["docs"]
 
 [tool.ruff.lint]
