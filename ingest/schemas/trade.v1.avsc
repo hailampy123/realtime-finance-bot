@@ -1,0 +1,19 @@
+{
+  "type": "record",
+  "name": "Trade",
+  "namespace": "md.v1",
+  "fields": [
+    {"name": "venue", "type": "string"},
+    {"name": "venue_symbol", "type": "string"},
+    {"name": "instrument_id", "type": "string"},
+    {"name": "trade_id", "type": "string"},
+    {"name": "event_ts_us", "type": "long"},
+    {"name": "ingest_ts_us", "type": "long"},
+    {"name": "price", "type": "string"},
+    {"name": "size", "type": "string"},
+    {"name": "side", "type": {"type": "enum", "name": "Side", "symbols": ["BUY", "SELL", "UNKNOWN"]}},
+    {"name": "sequence", "type": ["null", "long"], "default": null},
+    {"name": "is_backfill", "type": "boolean", "default": false},
+    {"name": "source", "type": {"type": "enum", "name": "Source", "symbols": ["STREAM", "REST_REPAIR", "ARCHIVE"]}, "default": "STREAM"}
+  ]
+}
