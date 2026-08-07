@@ -1,0 +1,9 @@
+.omc/
+.terraform/
+*.tfstate
+*.tfstate.*
+.env
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
