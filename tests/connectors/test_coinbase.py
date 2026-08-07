@@ -143,6 +143,51 @@ async def test_repair_refetches_recent_trades_best_effort(connector, monkeypatch
     assert all(t.source is Source.REST_REPAIR for t in trades)
 
 
+async def test_a_malformed_repair_row_does_not_prevent_siblings_from_being_recovered(
+    connector, monkeypatch
+):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "trades": [
+                    # missing "price" — _to_trade's str(row["price"]) will raise KeyError.
+                    {
+                        "trade_id": "555000112",
+                        "product_id": "BTC-USD",
+                        "size": "0.001",
+                        "side": "SELL",
+                        "time": "2026-08-07T12:00:01.000000Z",
+                    },
+                    {
+                        "trade_id": "555000113",
+                        "product_id": "BTC-USD",
+                        "price": "43217.00",
+                        "size": "0.002",
+                        "side": "BUY",
+                        "time": "2026-08-07T12:00:02.000000Z",
+                    },
+                ]
+            }
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, params=None):
+            return FakeResponse()
+
+    monkeypatch.setattr("ingest.connectors.coinbase.httpx.AsyncClient", lambda **kw: FakeClient())
+    gap = Gap(venue="coinbase", venue_symbol="BTC-USD", last_seen=42, next_seen=45)
+    trades = await connector.repair(gap)
+    assert [t.trade_id for t in trades] == ["555000113"]
+
+
 async def test_repair_of_the_wildcard_symbol_covers_every_configured_product(
     connector, monkeypatch
 ):

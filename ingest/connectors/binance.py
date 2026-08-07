@@ -29,6 +29,8 @@ class BinanceConnector:
     """
 
     venue = "binance"
+    # aggTrade ids are persistent across reconnects; resetting here would mask real gaps.
+    resets_sequence_on_reconnect = False
 
     def __init__(self, instruments: InstrumentMap) -> None:
         self._instruments = instruments
@@ -92,9 +94,13 @@ class BinanceConnector:
 
         trades: list[Trade] = []
         for row in rows:
-            if int(row["a"]) >= gap.next_seen:
-                continue  # the stream already delivered these
-            trade = self._to_trade(row, symbol=gap.venue_symbol, source=Source.REST_REPAIR)
+            try:
+                if int(row["a"]) >= gap.next_seen:
+                    continue  # the stream already delivered these
+                trade = self._to_trade(row, symbol=gap.venue_symbol, source=Source.REST_REPAIR)
+            except (KeyError, ValueError) as exc:
+                log.warning("malformed_repair_row", venue=self.venue, error=str(exc), row=row)
+                continue
             if trade is not None:
                 trades.append(trade)
         log.info(

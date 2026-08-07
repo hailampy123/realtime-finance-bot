@@ -35,7 +35,8 @@ make test-integration  # end-to-end against the local broker
 make compose-down
 ```
 
-Run producers against local Kafka without touching AWS:
+Run producers against local Kafka without touching AWS (see Known limitations —
+this currently does not work due to a Docker networking gap):
 
 ```bash
 docker compose -f docker/compose.yaml --profile live up --build
@@ -67,3 +68,16 @@ version in a Kafka header. Producer and Spark reader load the same `.avsc` from
   repair, and hiding that would be worse than documenting it.
 - **Equity coverage is IEX-only (~2% of volume)** on Alpaca's free tier. Crypto
   carries the real streaming workload.
+- **`docker compose --profile live` cannot deliver messages to the local broker.**
+  The Kafka container advertises `PLAINTEXT://localhost:9092`, which resolves to
+  the `producers` container itself rather than the broker when run from inside a
+  sibling container — a known Kafka-in-Docker single-listener limitation.
+  Producers work correctly against a real MSK cluster (the actual deployment
+  target) and the integration tests (which connect from the host, not from
+  inside another container). Fixing this locally would need a second,
+  container-internal listener; tracked as a follow-up, not yet implemented.
+- **DLQ topics are provisioned but not yet written to.** `_dlq.*` topics exist
+  per the design spec's dead-letter contract, but no connector or runner code
+  publishes to them yet — an unparseable frame currently propagates as an
+  exception, causing the WebSocket session to reconnect rather than being
+  routed to the DLQ. Tracked as follow-up work for a later stage.

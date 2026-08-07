@@ -102,7 +102,13 @@ class CoinbaseConnector:
                 response.raise_for_status()
                 for row in response.json().get("trades", []):
                     row.setdefault("product_id", product_id)
-                    trade = self._to_trade(row, sequence=None, source=Source.REST_REPAIR)
+                    try:
+                        trade = self._to_trade(row, sequence=None, source=Source.REST_REPAIR)
+                    except (KeyError, ValueError) as exc:
+                        log.warning(
+                            "malformed_repair_row", venue=self.venue, error=str(exc), row=row
+                        )
+                        continue
                     if trade is not None:
                         recovered.append(trade)
         log.info("gap_repaired", venue=self.venue, products=len(products), recovered=len(recovered))

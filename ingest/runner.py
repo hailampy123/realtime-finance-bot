@@ -63,9 +63,15 @@ class IngestRunner:
             log.error("gap_repair_failed", error=str(exc))
 
     async def handle_reconnect(self) -> None:
-        """A fresh connection restarts the venue's sequence; forget the watermark."""
-        self.tracker = SequenceTracker()
-        log.info("sequence_watermarks_reset", venue=self.connector.venue)
+        """A fresh connection restarts a connection-scoped sequence; venues whose
+        sequence id is persistent across reconnects (e.g. Binance's aggTrade id)
+        must keep their watermark so a real gap during the outage is still detected.
+        """
+        if getattr(self.connector, "resets_sequence_on_reconnect", True):
+            self.tracker = SequenceTracker()
+            log.info("sequence_watermarks_reset", venue=self.connector.venue)
+        else:
+            log.info("sequence_watermarks_preserved", venue=self.connector.venue)
 
     async def drain(self, stop: asyncio.Event) -> None:
         while not stop.is_set() or self.queue.qsize() > 0:
@@ -90,5 +96,7 @@ class IngestRunner:
             await socket.run(stop)
         finally:
             stop.set()
+            if self._repair_tasks:
+                await asyncio.gather(*list(self._repair_tasks), return_exceptions=True)
             with contextlib.suppress(asyncio.CancelledError):
                 await drain_task

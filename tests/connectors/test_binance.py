@@ -132,6 +132,36 @@ async def test_repair_fetches_the_missing_id_range(connector, monkeypatch):
     assert all(t.source is Source.REST_REPAIR for t in trades)
 
 
+async def test_a_malformed_repair_row_does_not_prevent_siblings_from_being_recovered(
+    connector, monkeypatch
+):
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return [
+                # missing "q" (size) — _to_trade's str(data["q"]) will raise KeyError.
+                {"a": 101, "p": "1.5", "T": 1_700_000_000_000, "m": False},
+                {"a": 102, "p": "1.6", "q": "2.1", "T": 1_700_000_000_001, "m": True},
+            ]
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, params=None):
+            return FakeResponse()
+
+    monkeypatch.setattr("ingest.connectors.binance.httpx.AsyncClient", lambda **kw: FakeClient())
+    gap = Gap(venue="binance", venue_symbol="BTCUSDT", last_seen=100, next_seen=105)
+    trades = await connector.repair(gap)
+    assert [t.trade_id for t in trades] == ["102"]
+
+
 async def test_repair_does_not_return_ids_at_or_beyond_the_resume_point(connector, monkeypatch):
     class FakeResponse:
         def raise_for_status(self):
