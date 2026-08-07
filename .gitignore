@@ -10,3 +10,6 @@ __pycache__/
 .superpowers/
 .claude/worktrees/
 *.egg-info/
+infra/**/terraform.tfvars
+infra/**/backend.tf
+infra/**/.terraform.lock.hcl
