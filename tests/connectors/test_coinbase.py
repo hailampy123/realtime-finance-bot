@@ -76,6 +76,25 @@ def test_unmapped_product_is_skipped(connector):
     assert connector.parse(json.dumps(frame)) == []
 
 
+def test_missing_side_falls_back_to_unknown_without_crashing_the_frame(connector):
+    frame = json.loads(FIXTURE.read_text())
+    del frame["events"][0]["trades"][0]["side"]
+    (trade,) = connector.parse(json.dumps(frame))
+    assert trade.side is Side.UNKNOWN
+
+
+def test_a_malformed_trade_does_not_prevent_siblings_in_the_same_frame_from_parsing(connector):
+    frame = json.loads(FIXTURE.read_text())
+    good_trade = json.loads(json.dumps(frame["events"][0]["trades"][0]))
+    good_trade["trade_id"] = "555000999"
+    bad_trade = dict(frame["events"][0]["trades"][0])
+    del bad_trade["side"]  # still parses under the fix above, so use a harder failure:
+    del bad_trade["price"]  # required field, to prove containment, not just the fallback
+    frame["events"][0]["trades"] = [bad_trade, good_trade]
+    trades = connector.parse(json.dumps(frame))
+    assert [t.trade_id for t in trades] == ["555000999"]
+
+
 def test_sequence_key_is_connection_wide_not_per_symbol(connector):
     assert connector.sequence_symbol == "*"
 

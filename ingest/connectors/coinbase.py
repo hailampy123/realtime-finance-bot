@@ -53,7 +53,11 @@ class CoinbaseConnector:
         trades: list[Trade] = []
         for event in frame.get("events", []):
             for row in event.get("trades", []):
-                trade = self._to_trade(row, sequence=sequence, source=Source.STREAM)
+                try:
+                    trade = self._to_trade(row, sequence=sequence, source=Source.STREAM)
+                except (KeyError, ValueError) as exc:
+                    log.warning("malformed_trade", venue=self.venue, error=str(exc), row=row)
+                    continue
                 if trade is not None:
                     trades.append(trade)
         return trades
@@ -76,7 +80,7 @@ class CoinbaseConnector:
             ingest_ts_us=time.time_ns() // 1000,
             price=str(row["price"]),
             size=str(row["size"]),
-            side=Side(row["side"]) if row["side"] in ("BUY", "SELL") else Side.UNKNOWN,
+            side=Side(row["side"]) if row.get("side") in ("BUY", "SELL") else Side.UNKNOWN,
             sequence=int(sequence) if sequence is not None else None,
             is_backfill=source is not Source.STREAM,
             source=source,
