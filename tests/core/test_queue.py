@@ -28,10 +28,16 @@ async def test_block_policy_waits_for_room_and_never_drops():
     assert q.dropped == 0
 
 
-def test_trades_block_and_depth_drops():
-    """The one failure this system must not have is silent trade loss."""
-    assert TOPIC_POLICIES["md.trades.v1"] is DropPolicy.BLOCK
-    assert TOPIC_POLICIES["md.book.depth.v1"] is DropPolicy.DROP_OLDEST
+def test_topic_policies_match_the_design_exactly():
+    """Silent trade loss is the one failure this system must not have."""
+    assert TOPIC_POLICIES == {
+        "md.trades.v1": DropPolicy.BLOCK,
+        "md.bars.v1": DropPolicy.BLOCK,
+        "news.articles.v1": DropPolicy.BLOCK,
+        "md.book.top.v1": DropPolicy.DROP_OLDEST,
+        "md.book.depth.v1": DropPolicy.DROP_OLDEST,
+        "ops.metrics.v1": DropPolicy.DROP_OLDEST,
+    }
 
 
 def test_every_configured_topic_has_an_explicit_policy():
