@@ -125,3 +125,90 @@ async def test_stop_event_ends_the_loop():
 
     ws = ResilientWebSocket("wss://x", [], lambda raw: asyncio.sleep(0), connect=connect)
     await asyncio.wait_for(ws.run(stop), timeout=1.0)
+
+
+class SilentSocket:
+    """Connects and subscribes, then never delivers a frame."""
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send(self, payload: str) -> None:
+        self.sent.append(payload)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def __aiter__(self):
+        return self._gen()
+
+    async def _gen(self):
+        await asyncio.Event().wait()  # never fires
+        yield ""  # pragma: no cover
+
+
+async def test_no_reconnect_hook_when_the_first_dial_fails():
+    """A failed dial must not make the next connection look like a reconnect."""
+    stop = asyncio.Event()
+    reconnects: list[int] = []
+    attempts = {"n": 0}
+
+    async def connect(url: str):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise ConnectionRefusedError("first dial fails")
+        return FakeSocket(['{"a":1}'], fail_after=False)
+
+    async def on_message(raw: str) -> None:
+        stop.set()
+
+    async def on_reconnect() -> None:
+        reconnects.append(1)
+
+    ws = ResilientWebSocket(
+        "wss://x", [{"sub": 1}], on_message, on_reconnect, connect=connect, max_backoff_s=0.01
+    )
+    await asyncio.wait_for(ws.run(stop), timeout=2.0)
+    assert attempts["n"] == 2
+    assert reconnects == [], "on_reconnect fired on the first successful connection"
+
+
+async def test_stop_is_observed_while_the_socket_is_silent():
+    """Shutdown must not wait for a frame that may never arrive."""
+    stop = asyncio.Event()
+
+    async def connect(url: str):
+        return SilentSocket()
+
+    async def on_message(raw: str) -> None:  # pragma: no cover - never called
+        raise AssertionError("silent socket delivered a frame")
+
+    ws = ResilientWebSocket("wss://x", [{"sub": 1}], on_message, connect=connect)
+    task = asyncio.create_task(ws.run(stop))
+    await asyncio.sleep(0.05)
+    stop.set()
+    await asyncio.wait_for(task, timeout=1.0)
+
+
+async def test_proactive_reconnect_fires_on_a_silent_socket():
+    """The lifetime deadline must expire even when no frames arrive."""
+    stop = asyncio.Event()
+    connects = {"n": 0}
+
+    async def connect(url: str):
+        connects["n"] += 1
+        if connects["n"] >= 2:
+            stop.set()
+        return SilentSocket()
+
+    async def on_message(raw: str) -> None:  # pragma: no cover - never called
+        raise AssertionError("silent socket delivered a frame")
+
+    ws = ResilientWebSocket(
+        "wss://x", [{"sub": 1}], on_message, connect=connect, max_lifetime_s=0.05
+    )
+    await asyncio.wait_for(ws.run(stop), timeout=2.0)
+    assert connects["n"] >= 2, "lifetime deadline did not trigger a reconnect"

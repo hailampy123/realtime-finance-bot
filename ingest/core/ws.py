@@ -65,35 +65,60 @@ class ResilientWebSocket:
         self.max_backoff_s = max_backoff_s
         self._connect = connect or _default_connect
         self.last_sent: list[str] = []
+        # Only a session that actually established a connection counts. A failed
+        # dial must not make the next successful connection look like a reconnect.
+        self._has_connected = False
+
+    def _new_delays(self) -> Iterator[float]:
+        return backoff_delays(self.max_backoff_s, lambda: random.random() * 0.3)
 
     async def run(self, stop: asyncio.Event) -> None:
-        delays = backoff_delays(self.max_backoff_s, lambda: random.random() * 0.3)
-        first_connection = True
+        delays = self._new_delays()
         while not stop.is_set():
             try:
-                await self._session(stop, first_connection)
-                delays = backoff_delays(self.max_backoff_s, lambda: random.random() * 0.3)
-            except Exception as exc:  # any failure means reconnect
+                await self._session(stop)
+            except Exception as exc:
                 log.warning("ws_session_failed", url=self.url, error=str(exc))
-            first_connection = False
-            if stop.is_set():
-                return
-            await asyncio.sleep(next(delays))
+                if stop.is_set():
+                    return
+                await asyncio.sleep(next(delays))
+                continue
+            # Clean end: stop requested, or the lifetime deadline expired.
+            # Reconnect immediately — a proactive reconnect should not be delayed.
+            delays = self._new_delays()
 
-    async def _session(self, stop: asyncio.Event, first_connection: bool) -> None:
+    async def _pump(self, socket: Socket) -> None:
+        async for raw in socket:
+            await self.on_message(raw)
+
+    async def _session(self, stop: asyncio.Event) -> None:
         socket = await self._connect(self.url)
         async with socket:
+            # Reset per session: this only ever needs to reflect what was sent
+            # on the current connection, not accumulate across every reconnect.
+            self.last_sent = []
             for payload in self.subscribe:
                 encoded = json.dumps(payload)
                 self.last_sent.append(encoded)
                 await socket.send(encoded)
-            if not first_connection and self.on_reconnect is not None:
+            if self._has_connected and self.on_reconnect is not None:
                 await self.on_reconnect()
-            deadline = asyncio.get_running_loop().time() + self.max_lifetime_s
-            async for raw in socket:
-                await self.on_message(raw)
-                if stop.is_set():
-                    return
-                if asyncio.get_running_loop().time() >= deadline:
-                    log.info("ws_proactive_reconnect", url=self.url)
-                    return
+            self._has_connected = True
+
+            pump = asyncio.create_task(self._pump(socket))
+            stopper = asyncio.create_task(stop.wait())
+            try:
+                done, _pending = await asyncio.wait(
+                    {pump, stopper},
+                    timeout=self.max_lifetime_s,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                for task in (pump, stopper):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(pump, stopper, return_exceptions=True)
+            if pump in done:
+                pump.result()  # re-raise a socket failure so run() reconnects
+            elif not done:
+                log.info("ws_proactive_reconnect", url=self.url)
