@@ -1,0 +1,25 @@
+instruments:
+  - id: BTC-USD
+    asset_class: crypto
+    venues: {binance: BTCUSDT, coinbase: BTC-USD}
+  - id: ETH-USD
+    asset_class: crypto
+    venues: {binance: ETHUSDT, coinbase: ETH-USD}
+  - id: SOL-USD
+    asset_class: crypto
+    venues: {binance: SOLUSDT, coinbase: SOL-USD}
+  - id: XRP-USD
+    asset_class: crypto
+    venues: {binance: XRPUSDT, coinbase: XRP-USD}
+  - id: ADA-USD
+    asset_class: crypto
+    venues: {binance: ADAUSDT, coinbase: ADA-USD}
+  - id: LINK-USD
+    asset_class: crypto
+    venues: {binance: LINKUSDT, coinbase: LINK-USD}
+  - id: AVAX-USD
+    asset_class: crypto
+    venues: {binance: AVAXUSDT, coinbase: AVAX-USD}
+  - id: DOGE-USD
+    asset_class: crypto
+    venues: {binance: DOGEUSDT, coinbase: DOGE-USD}
