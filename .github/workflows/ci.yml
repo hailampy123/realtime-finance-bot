@@ -23,3 +23,14 @@ jobs:
       - run: terraform -chdir=infra/envs/dev init -backend=false
       - run: terraform -chdir=infra/envs/dev validate
       - run: terraform fmt -check -recursive infra/
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync
+      - run: docker compose -f docker/compose.yaml up -d --wait kafka
+      - run: RUN_INTEGRATION=1 uv run pytest tests/integration -v
+      - if: always()
+        run: docker compose -f docker/compose.yaml down -v
