@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euxo pipefail
+
+dnf install -y docker git
+systemctl enable --now docker
+
+mkdir -p /opt/fdai
+cd /opt/fdai
+git clone --depth 1 --branch ${repo_ref} ${repo_url} app
+cd app
+
+cat > .env <<'ENVEOF'
+INGEST_BOOTSTRAP_SERVERS=${bootstrap_servers}
+INGEST_SASL_USERNAME=${sasl_username}
+INGEST_SASL_PASSWORD=${sasl_password}
+INGEST_UNIVERSE_PATH=/app/config/universe.yaml
+INGEST_VENUES=${venues_json}
+ENVEOF
+chmod 600 .env
+
+docker build -f docker/Dockerfile -t fdai-producers .
+docker run -d --name fdai-producers --restart unless-stopped --env-file .env fdai-producers
