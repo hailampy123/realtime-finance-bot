@@ -118,6 +118,18 @@ async def test_repair_failure_does_not_kill_the_stream(wiring, monkeypatch, capl
     assert queue.qsize() == 2  # the live trades still made it through
 
 
+async def test_drain_flushes_everything_already_queued_even_if_stop_is_already_set(wiring):
+    """Reproduces the exact shutdown race: stop fires while trades are still queued."""
+    runner, producer, queue = wiring
+    for i in range(5):
+        await queue.put(f"trade-{i}")
+    stop = asyncio.Event()
+    stop.set()
+    await asyncio.wait_for(runner.drain(stop), timeout=1.0)
+    assert [t for _, t in producer.sent] == [f"trade-{i}" for i in range(5)]
+    assert queue.qsize() == 0
+
+
 async def test_reconnect_resets_the_watermark_so_a_new_stream_is_not_a_gap(wiring):
     runner, _, queue = wiring
     await runner.handle_message(FIXTURE.read_text())

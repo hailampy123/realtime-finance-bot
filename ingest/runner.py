@@ -68,7 +68,7 @@ class IngestRunner:
         log.info("sequence_watermarks_reset", venue=self.connector.venue)
 
     async def drain(self, stop: asyncio.Event) -> None:
-        while not stop.is_set():
+        while not stop.is_set() or self.queue.qsize() > 0:
             try:
                 trade = await asyncio.wait_for(self.queue.get(), timeout=0.2)
             except TimeoutError:
