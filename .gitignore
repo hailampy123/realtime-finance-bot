@@ -9,6 +9,7 @@ __pycache__/
 .DS_Store
 .superpowers/
 .claude/worktrees/
+graphify-out/
 *.egg-info/
 infra/**/terraform.tfvars
 infra/**/backend.tf
