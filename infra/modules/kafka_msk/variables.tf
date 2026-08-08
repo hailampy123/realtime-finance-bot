@@ -33,7 +33,19 @@ variable "broker_ebs_gb" {
 }
 
 variable "public_access" {
-  description = "Enable on the second apply; AWS rejects it while the cluster is CREATING."
+  description = "Enable on the last apply; AWS rejects it while the cluster is CREATING, and again unless restrict_acls is already true."
+  type        = bool
+  default     = false
+}
+
+variable "restrict_acls" {
+  description = <<-DESC
+    Sets allow.everyone.if.no.acl.found. Must be true before public_access can
+    be enabled, and must not be turned on until scripts/create_acls.py has run
+    against the cluster -- a cluster with deny-by-default and no ACLs rejects
+    every client, including one trying to add ACLs. Set false to unlock such a
+    cluster.
+  DESC
   type        = bool
   default     = false
 }

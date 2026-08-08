@@ -52,7 +52,7 @@ notebook-test:
 notebook-clean:
 	uv run --group notebook nbstripout notebooks/*.ipynb
 
-.PHONY: up down rebuild smoke
+.PHONY: up down rebuild smoke unlock
 
 PROJECT ?= fdai
 DEV := infra/envs/dev
@@ -65,6 +65,18 @@ down:
 	terraform -chdir=infra/bootstrap destroy -auto-approve
 
 rebuild: down up
+
+# Recovery hatch. A cluster whose ACLs were enforced before
+# scripts/create_acls.py ran denies every client, including one trying to add
+# ACLs, so it cannot be repaired from a Kafka client — only by loosening the
+# broker configuration again.
+#
+# One apply is enough despite touching both settings: the AWS provider updates
+# connectivity before configuration, which is the wrong order for locking down
+# but exactly the right one for backing out.
+unlock:
+	terraform -chdir=$(DEV) apply -auto-approve \
+	  -var="msk_public_access=false" -var="msk_restrict_acls=false"
 
 smoke:
 	uv run python -m scripts.smoke_test \

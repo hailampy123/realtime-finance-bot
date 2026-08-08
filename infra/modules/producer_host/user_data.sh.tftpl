@@ -20,3 +20,9 @@ chmod 600 .env
 
 docker build -f docker/Dockerfile -t fdai-producers .
 docker run -d --name fdai-producers --restart unless-stopped --env-file .env fdai-producers
+
+# Last line on purpose. scripts/bootstrap.sh polls for this file over SSH
+# before running the Kafka ACL bootstrap, which needs the image above to
+# exist. `set -e` means the file is absent if any step failed, so its presence
+# is a real readiness signal rather than a guess about how long boot takes.
+touch /opt/fdai/ready

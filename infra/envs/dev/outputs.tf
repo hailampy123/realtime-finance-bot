@@ -18,3 +18,8 @@ output "sasl_password" {
 output "producer_public_ip" {
   value = module.producer_host.public_ip
 }
+
+output "producer_ssh_key_path" {
+  description = "Private key for the producer host. Gitignored; regenerated every make up."
+  value       = local_sensitive_file.producer_key.filename
+}

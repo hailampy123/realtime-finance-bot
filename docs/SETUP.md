@@ -347,12 +347,14 @@ cp infra/envs/dev/terraform.tfvars.example infra/envs/dev/terraform.tfvars
 
 | Variable | Default | Must you set it? | Notes |
 |---|---|---|---|
-| `kafka_client_cidrs` | **none** | **yes, required** | `list(string)`. Must include the Databricks NAT EIP from §3.4 and your own IP (`curl -s https://checkip.amazonaws.com`), each as a `/32`. |
-| `repo_url` | **none** | **yes, required** | Set to `https://github.com/hailampy123/realtime-finance-bot.git`. |
-| `region` | `"ap-southeast-1"` | no | |
+| `kafka_client_cidrs` | **none** | **yes, but `[]` is valid** | `list(string)`. **Only the Databricks NAT EIP from §3.4**, as a `/32`. Do *not* add your own IP: `make up` detects it and appends it every run, so a hand-written one silently goes stale the next time you change networks. Empty until you have looked the EIP up — everything except Databricks-to-Kafka works without it. |
+| `repo_url` | **none** | **yes, required** | Set to `https://github.com/hailampy123/realtime-finance-bot.git`. A placeholder here does not fail the apply: the instance is created, then `user_data` dies on `git clone` under `set -e`, so you get a running host with no producer and no `.env`. |
+| `region` | `"ap-southeast-1"` | no | Should match `AWS_REGION` (§5d), which the *state backend* uses. They are read independently and can drift; `make up` warns when they do. |
 | `project` | `"fdai"` | no | |
 | `repo_ref` | `"main"` | no | branch/ref the producer host clones |
-| `msk_public_access` | `false` | **no — do not hand-set** | `make up` applies the stack twice (`false`, then `true`) because AWS rejects enabling public access on a still-`CREATING` MSK cluster. |
+| `msk_public_access` | `false` | **no — do not hand-set** | Sequenced by `make up`. AWS rejects public access on a still-`CREATING` cluster, and again unless `msk_restrict_acls` is already true. |
+| `msk_restrict_acls` | `false` | **no — do not hand-set** | Sets `allow.everyone.if.no.acl.found=false`, MSK's precondition for public access. Turning it on before the ACLs exist locks every client out — see §5f. `make unlock` is the way back. |
+| `operator_cidrs` | `[]` | **no — detected** | Your current `/32`, passed by `scripts/bootstrap.sh`. Grants producer-host SSH (for the ACL bootstrap) and is appended to `kafka_client_cidrs`. |
 | `instance_profile_name` | `null` | no — leave `null` | the sandbox cannot create instance profiles; this only matters if the account ever provides a pre-existing one. |
 
 Never hand-edit or commit `backend.tf` (rendered from `backend.tf.tftpl` by
@@ -374,6 +376,57 @@ A secret scope named `${PROJECT}` (default `fdai`) holding `kafka_bootstrap`,
 `kafka_username`, `kafka_password` — republished on every `make up` because
 the broker DNS changes on every rebuild, so nothing downstream should ever
 hardcode it.
+
+### 5f. Why MSK public access needs Kafka ACLs, and why the order is fixed
+
+This is the single least obvious part of `make up`, and getting it wrong
+costs a full cluster rebuild — so it is worth reading once.
+
+MSK refuses `UpdateConnectivity` unless the broker configuration sets
+`allow.everyone.if.no.acl.found=false`:
+
+```text
+BadRequestException: The allow.everyone.if.no.acl.found configuration setting
+must be set to false when public access is turned on.
+```
+
+That setting is not a formality. It switches Kafka's authorizer to
+deny-by-default, so **every** SCRAM principal is refused unless an ACL allows
+it — including a principal trying to *create* ACLs, since `CreateAcls` needs
+`Alter` on the cluster. A cluster tightened before its ACLs exist cannot be
+repaired from any Kafka client. AWS states the order plainly: *"you must first
+set Apache Kafka ACLs for your cluster. Then, update the cluster's
+configuration."*
+
+Which forces an awkward shape. ACLs can only be written over a reachable
+broker; before public access the in-VPC endpoint is the only one that
+resolves; and the producer host is the only thing inside the VPC. So the ACL
+bootstrap runs *there*, over SSH, on a keypair Terraform generates into
+`infra/envs/dev/.ssh/` (gitignored, regenerated every `make up`).
+
+The grant is `User:*` — any authenticated principal, full access. That matches
+the security model this project already states: SASL/SCRAM plus the
+security-group allowlist is the access control, not per-topic authorization.
+Narrowing it would mean an ACL per new topic and consumer group, where a
+missing one shows up as a confusing runtime auth error.
+
+Two further constraints, both discovered the hard way:
+
+- **Steps 2 and 3 cannot be one apply.** The AWS provider updates
+  connectivity *before* configuration within a single cluster update, so a
+  combined apply attempts public access first and fails with the same error as
+  doing nothing.
+- **The wait is on a readiness file, not a timer.** `user_data` touches
+  `/opt/fdai/ready` as its last line; `bootstrap.sh` polls for it over SSH.
+  Sleeping instead would risk tightening the cluster before the ACLs land.
+
+If a bootstrap does die between the ACL grant and public access, the cluster
+may be left denying everything. Recover with:
+
+```bash
+make unlock    # allow.everyone.if.no.acl.found=false -> true, public access off
+make up        # re-runs the sequence in order
+```
 
 ## 6. Data sources — context and what's actually used
 
@@ -470,18 +523,32 @@ that delivers messages (§8, first bullet).
 1. Complete §2 (AWS credentials in your shell) and §3 (Databricks CLI
    upgraded + authenticated, NAT EIP located).
 2. `cp infra/envs/dev/terraform.tfvars.example infra/envs/dev/terraform.tfvars`
-   and fill in `repo_url` and `kafka_client_cidrs` per §5c.
-3. `make up` — runs `scripts/bootstrap.sh`:
-   bootstrap the state backend → render `backend.tf` → apply the dev stack
-   twice (MSK private, then public) → create topics → publish 3 secrets to
-   the Databricks secret scope → wait 180s for the producer host → smoke
-   test. Target: under 20 minutes end to end.
-4. Read the final `Ready.` block for the public/private broker DNS and the
-   producer host's IP.
+   and set `repo_url` per §5c. `kafka_client_cidrs` takes only the Databricks
+   NAT EIP, and `[]` is fine if you don't have it yet — your own IP is
+   detected on every run.
+3. `make up` — runs `scripts/bootstrap.sh`, eight steps:
+
+   | # | Step | Notes |
+   |---|---|---|
+   | 1–2 | state backend, render `backend.tf` | |
+   | 3 | apply the stack — MSK private, ACLs permissive | ~25–30 min; the cluster create dominates |
+   | 4 | wait for the producer host | polls `/opt/fdai/ready` over SSH, not a timer |
+   | 5 | grant Kafka ACLs from inside the VPC | `scripts/create_acls.py` on the producer host |
+   | 6 | enforce ACLs (`allow.everyone.if.no.acl.found=false`) | MSK's precondition for public access |
+   | 7 | enable MSK public access | must be its own apply — see §5f |
+   | 8 | topics, Databricks secrets, smoke test | |
+
+   Steps 3, 6, and 7 are three separate cluster operations, each of which AWS
+   applies serially, so **budget 45–60 minutes** rather than the 20 this
+   originally targeted. Why the order cannot be compressed is §5f.
+4. Read the final `Ready.` block for the public/private broker DNS, the
+   producer host's IP, and the `ssh` command for it.
 5. `make down` when finished — destroys the sandbox stack and the state
    backend. Databricks is untouched.
 6. `make rebuild` (= `down` + `up`) is the normal way to survive the
    account's 7-day wipe cycle.
+7. `make unlock` if a run dies between steps 5 and 7 and leaves the cluster
+   denying every client — see §5f.
 
 ## 8. Known gaps and follow-ups
 
@@ -498,3 +565,18 @@ Not blockers for `make up`, but worth knowing before you rely on them:
   them — the data-layer spec names two (Unity Catalog enabled, AUTO CDC
   available) that would force a structural redesign if false; the rest
   degrade gracefully with a named fallback (spec §11).
+- **The producer host is no longer strictly egress-only.** `make up` opens
+  port 22 to the operator's current `/32` because the Kafka ACL bootstrap can
+  only run from inside the VPC (§5f). The keypair is generated per run into
+  `infra/envs/dev/.ssh/` and gitignored. A plain `terraform apply` without
+  `operator_cidrs` creates no SSH rule at all, so the exposure lasts only as
+  long as the stack.
+- **`make up` now takes 45–60 minutes, not 20.** Three serial MSK cluster
+  operations (create, configuration, connectivity) rather than two. The
+  README's original target predates the ACL requirement.
+- **Kafka authorization is deliberately wide open to authenticated users.**
+  The ACL grant is `User:*` with full access, so SASL/SCRAM and the
+  security-group allowlist are the only access control. If this ever carries
+  data that needs per-topic isolation, `scripts/create_acls.py --principal`
+  narrows the grant, and every topic and consumer group then needs its own
+  ACL provisioned.

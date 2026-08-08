@@ -15,3 +15,5 @@ graphify-out/
 infra/**/terraform.tfvars
 infra/**/backend.tf
 infra/**/.terraform.lock.hcl
+infra/**/.ssh/
+*.pem

@@ -11,9 +11,13 @@ The AWS sandbox account is wiped every 7 days, so **nothing durable lives in
 it**. Unity Catalog managed Delta in the permanent Databricks account is the
 system of record; the sandbox is pure ephemeral compute.
 
-- `make up` — empty AWS account to streaming data. Target: under 20 minutes.
+- `make up` — empty AWS account to streaming data. Budget 45–60 minutes: three
+  serial MSK operations (create, then the ACL configuration and public access
+  that MSK requires in that order — see [`docs/SETUP.md`](docs/SETUP.md) §5f).
 - `make down` — destroys the sandbox. Databricks is untouched.
 - `make rebuild` — both, in order.
+- `make unlock` — recovery hatch if a bootstrap dies midway and leaves the
+  cluster denying every client.
 - **Any manual console step is a bug.** If `make up` can't create it, it doesn't exist.
 
 Terraform state lives in S3 *inside the sandbox account*. Losing state is

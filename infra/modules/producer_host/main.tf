@@ -18,6 +18,9 @@ resource "aws_instance" "producer" {
   # Null unless the account provides a pre-existing profile; we never create one.
   iam_instance_profile = var.instance_profile_name
 
+  # Null unless the operator needs the ACL-bootstrap shell. ForceNew.
+  key_name = var.key_name
+
   user_data = templatefile("${path.module}/user_data.sh.tftpl", {
     repo_url          = var.repo_url
     repo_ref          = var.repo_ref

@@ -92,11 +92,14 @@ flowchart TB
             IGW["Internet Gateway"]:::built
             SubnetA["Public subnet AZ-0"]:::built
             SubnetB["Public subnet AZ-1"]:::built
-            SGProducer["SG: producer\negress only"]:::built
+            SGProducer["SG: producer\negress + operator SSH /32"]:::built
             SGMsk["SG: msk\n9196 from kafka_client_cidrs\n9096 from VPC only"]:::built
 
             EC2["EC2 t3.small (AL2023)\nno instance profile\nDocker image built locally\ninfra/modules/producer_host"]:::built
             MSKCluster["MSK cluster: fdai-kafka\n2x kafka.t3.small, 50GB EBS each\nSASL/SCRAM only, TLS in-cluster\ninfra/modules/kafka_msk"]:::built
+            MSKConfig["MSK configuration\nallow.everyone.if.no.acl.found\nfalse once ACLs exist"]:::built
+
+            MSKConfig -. attached to .-> MSKCluster
 
             SubnetA --- EC2
             SubnetA --- MSKCluster
@@ -125,6 +128,9 @@ flowchart TB
         UC["Unity Catalog\nBronze/Silver/Gold\n(design only, no pipeline yet)"]:::planned
     end
 
+    Operator["Your machine\nscripts/bootstrap.sh"]:::built
+    Operator -->|"SSH 22, operator /32 only:\nKafka ACL bootstrap\n(scripts/create_acls.py)"| EC2
+
     MSKCluster -->|"public bootstrap endpoint\nSASL_SSL:9196"| NAT
     NAT -.-> UC
     Secret -.->|"databricks CLI, run\nfrom your machine\n(scripts/bootstrap.sh)"| SecretScope
@@ -140,6 +146,14 @@ reproducibility contract). The single link into Account B is the MSK public
 bootstrap endpoint, reachable only from the CIDRs in `kafka_client_cidrs`
 (the Databricks NAT EIP and your own IP) — no IAM role, no VPC peering, no
 Private Link.
+
+The one edge that looks out of place is the SSH arrow. MSK will not enable
+public access unless `allow.everyone.if.no.acl.found` is false, which makes
+Kafka deny-by-default, which means ACLs must already exist — and ACLs can only
+be written over a reachable broker, which before public access means from
+inside the VPC. The producer host is the only thing in there. Hence a
+per-run keypair and a `/32` SSH rule that exist for exactly one step of
+`make up`. The full reasoning is in [`docs/SETUP.md`](SETUP.md) §5f.
 
 ## 3. What "final deployed state (for now)" means
 

@@ -74,8 +74,19 @@ resource "aws_security_group" "msk" {
 
 resource "aws_security_group" "producer" {
   name        = "${var.project}-producer"
-  description = "Producer host: egress only"
+  description = "Producer host: egress only, plus optional operator SSH for ACL bootstrap"
   vpc_id      = aws_vpc.this.id
+
+  dynamic "ingress" {
+    for_each = length(var.ssh_ingress_cidrs) > 0 ? [1] : []
+    content {
+      description = "Operator SSH for Kafka ACL bootstrap"
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = var.ssh_ingress_cidrs
+    }
+  }
 
   egress {
     from_port   = 0

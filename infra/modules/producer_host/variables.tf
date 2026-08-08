@@ -48,3 +48,13 @@ variable "instance_profile_name" {
   type        = string
   default     = null
 }
+
+variable "key_name" {
+  description = <<-DESC
+    EC2 key pair for operator SSH. Null means no key and no shell access.
+    Needed only for the Kafka ACL bootstrap, which has to run from inside the
+    VPC. Note this is ForceNew on aws_instance: changing it replaces the host.
+  DESC
+  type        = string
+  default     = null
+}

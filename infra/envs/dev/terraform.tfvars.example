@@ -1,4 +1,11 @@
 # Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
-region             = "ap-southeast-1"
-repo_url           = "https://github.com/hailampy123/realtime-finance-bot.git"
-kafka_client_cidrs = ["203.0.113.10/32", "198.51.100.25/32"] # databricks NAT EIP, your IP
+region   = "ap-southeast-1"
+repo_url = "https://github.com/hailampy123/realtime-finance-bot.git"
+
+# Only the Databricks workspace NAT EIP belongs here, as a /32 (docs/SETUP.md
+# §3.4). Your own IP is detected by scripts/bootstrap.sh on every run and
+# appended automatically — do not add it here, where it would silently go stale
+# the next time you change networks.
+#
+# An empty list is valid: everything except Databricks-to-Kafka works without it.
+kafka_client_cidrs = ["203.0.113.10/32"]

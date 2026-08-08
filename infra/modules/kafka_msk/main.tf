@@ -44,10 +44,48 @@ resource "aws_secretsmanager_secret_policy" "scram" {
   })
 }
 
+# MSK refuses UpdateConnectivity unless allow.everyone.if.no.acl.found is
+# false, and that property only reaches the brokers through a configuration --
+# there is no cluster-level argument for it.
+#
+# The value is a variable rather than a constant because the ordering is
+# load-bearing. false turns Kafka's authorizer to deny-by-default, which locks
+# out every SCRAM principal, including the one that would create the ACLs. The
+# cluster is therefore born permissive, gets its ACLs (scripts/create_acls.py,
+# run from inside the VPC), and only then is tightened. AWS documents the same
+# order: "you must first set Apache Kafka ACLs for your cluster. Then, update
+# the cluster's configuration".
+#
+# server_properties is not ForceNew, so flipping this edits the configuration
+# in place and publishes a new revision -- the cluster is never replaced, and
+# the flip is reversible if a bootstrap goes wrong.
+
+# A deleted MSK configuration lingers in DELETING for a while and its name
+# stays taken, which would make `make rebuild` fail on the re-create. The
+# suffix is stable in state, so flipping restrict_acls does not rename it
+# (name is ForceNew and a rename would replace the cluster).
+resource "random_id" "config" {
+  byte_length = 4
+}
+
+resource "aws_msk_configuration" "this" {
+  name        = "${var.project}-kafka-${random_id.config.hex}"
+  description = "${var.project}: ACL enforcement toggle for MSK public access"
+
+  server_properties = <<-PROPERTIES
+    allow.everyone.if.no.acl.found=${var.restrict_acls ? "false" : "true"}
+  PROPERTIES
+}
+
 resource "aws_msk_cluster" "this" {
   cluster_name           = "${var.project}-kafka"
   kafka_version          = var.kafka_version
   number_of_broker_nodes = var.broker_count
+
+  configuration_info {
+    arn      = aws_msk_configuration.this.arn
+    revision = aws_msk_configuration.this.latest_revision
+  }
 
   broker_node_group_info {
     instance_type   = var.broker_instance_type
