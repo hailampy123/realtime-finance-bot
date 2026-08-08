@@ -34,4 +34,6 @@ services:
       INGEST_BOOTSTRAP_SERVERS: kafka:9092
       INGEST_UNIVERSE_PATH: /app/config/universe.yaml
     profiles: ["live"]
-    restart: unless-stopped
+    # No restart policy: a local producer that cannot reach its broker should
+    # exit and say so. `unless-stopped` turned an unreachable-broker failure
+    # into a container that error-looped for 16h and survived `compose-down`.

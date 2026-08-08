@@ -31,11 +31,23 @@ it isn't.
 ## Local development
 
 ```bash
-make compose-up        # single-broker Kafka on localhost:9092
+make compose-up        # single-broker Kafka on localhost:9092 (empty: no topics, no data)
 make check             # lint + typecheck + unit tests
 make test-integration  # end-to-end against the local broker
 make compose-down
 ```
+
+To get *data* locally, not just a broker — brings up compose Kafka, creates the
+topics, and runs the Binance + Coinbase producers on the host. Runs in the
+foreground; leave it in its own terminal:
+
+```bash
+make stream-local
+```
+
+The producers run on the host rather than in the `producers` container
+deliberately: see Known limitations for why the container cannot reach the
+broker.
 
 Run producers against local Kafka without touching AWS (see Known limitations —
 this currently does not work due to a Docker networking gap):
@@ -65,7 +77,19 @@ After `make up` (or `make compose-up` locally), trades are flowing but nothing
 is yet reading them into a lakehouse — Stage 2 (Databricks Bronze/Silver/Gold)
 is designed, not implemented (see
 [`docs/superpowers/specs/2026-08-08-data-layer-batch-history-and-serving-design.md`](docs/superpowers/specs/2026-08-08-data-layer-batch-history-and-serving-design.md)).
-Two ways to consume in the meantime:
+Three ways to consume in the meantime:
+
+**Local dev notebooks** ([`notebooks/`](notebooks/README.md)) — the interactive
+loop: stream health and sequence gaps, exploratory analysis over a bounded
+window, and a pandas prototype of the Silver dedupe/bars transforms with the
+PySpark each maps to. Backed by [`devlab/`](devlab), a small helper library
+that resolves either broker from one env var. Jupyter and pandas live in an
+opt-in dependency group, so they never reach `make check` or the producer image.
+
+```bash
+make stream-local   # in one terminal
+make notebook       # in another
+```
 
 **Ad-hoc local consumer** — decodes the same bare Avro the producer writes and
 computes a rolling per-instrument VWAP:

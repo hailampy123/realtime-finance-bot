@@ -179,42 +179,60 @@ here today, and the rest unblocks Stage 2 the moment it starts.
    the IP that matters. Nodes have no public IPs; all egress SNATs to the
    VPC's NAT Gateway Elastic IP.
 
-   Fastest reliable method — ask the cluster directly rather than tracing VPC
-   topology. Run this in a notebook on a **classic** cluster in the workspace:
+   **Step 1 — count the availability zones.** Do this first; it determines how
+   much work the rest is. In the workspace: **Compute → Create compute →
+   Advanced → Instances → Availability Zone**. The dropdown lists the AZs this
+   workspace can launch into.
+
+   This matters because a NAT Gateway is per-AZ. Databricks recommends
+   deploying "a NAT Gateway (and subnet) in each availability zone" for
+   high availability, so a multi-AZ workspace plausibly has **one EIP per
+   AZ** — and Databricks does **not** document the managed-VPC topology
+   anywhere, so it cannot be looked up, only observed.
+
+   **Step 2 — read the egress IP from each AZ.** On a **classic** cluster
+   (single-node, smallest node type, 10-minute auto-terminate is plenty),
+   pinned to a specific AZ via the dropdown above:
 
    ```python
    %sh curl -s https://checkip.amazonaws.com
    ```
 
-   That returns the actual egress IP, which beats inferring it. (Undocumented
-   as an official technique, so treat it as a diagnostic to confirm what you
-   find in AWS, not as the sole source.)
+   Repeat once per AZ. Collect the **distinct** IPs.
 
-   **One `curl` is one observation, not the full set.** It reports the NAT
-   Gateway that *that cluster, in that availability zone*, happened to egress
-   through. A multi-AZ workspace can have one NAT Gateway per AZ, each with
-   its own EIP. Allowlist only the one you sampled and the pipeline works when
-   the cluster lands in that AZ and times out when it lands in another —
-   intermittent flakiness that looks like a broker fault. **Enumerate every
-   NAT Gateway and allowlist all of their EIPs.**
+   - Single AZ → one IP, and you're done.
+   - Multiple AZs all returning the **same** IP → single shared NAT Gateway.
+     That's a useful positive result, not a wasted run — it proves one `/32`
+     is sufficient.
+   - Multiple AZs returning **different** IPs → allowlist every one.
 
-   Do that in AWS — **Account B**, the account hosting the workspace, not the
-   sandbox. The EIP appears nowhere in the Databricks console or API; the
-   account-level network object has no NAT or EIP field.
+   Getting this wrong is unpleasant to debug: allowlist only the AZ you
+   happened to sample and the pipeline succeeds when the cluster lands there
+   and times out when it doesn't, which reads as an intermittent broker fault
+   rather than a firewall rule.
+
+   Every distinct IP goes into `kafka_client_cidrs` as a `/32` (§5c),
+   alongside your own IP.
+
+   **If you do have AWS CLI access to Account B**, you can enumerate them
+   directly instead — but note this is often unavailable for a managed or
+   training workspace, and the EIP appears nowhere in the Databricks console
+   or API (the account-level network object has no NAT or EIP field). Get the
+   VPC ID from **Account Console → Workspaces → your workspace → network
+   configuration**, then:
 
    ```bash
-   aws ec2 describe-nat-gateways \
+   aws ec2 describe-nat-gateways --region <workspace-region> \
      --filter Name=vpc-id,Values=<workspace-vpc-id> \
      --query 'NatGateways[].NatGatewayAddresses[].PublicIp' --output text
    ```
 
-   - **Customer-managed VPC:** you own the VPC and the EIPs; find it by name/tag.
-   - **Databricks-managed VPC:** get the VPC ID from **Account Console →
-     Workspaces → your workspace → network configuration**, then run the
-     command above. Databricks allocated these EIPs, so you don't control
-     their lifecycle — re-verify after any workspace network change.
+   `--region` is required and must be the **workspace's** region — this
+   command is region-scoped and silently returns nothing (no error) when
+   pointed at the wrong one.
 
-   Every EIP returned goes into `kafka_client_cidrs` as a `/32` (§5c).
+   In a Databricks-managed VPC these EIPs are Databricks-allocated, so you
+   don't control their lifecycle; re-verify after any workspace network change.
 
    **Region note.** The workspace and the sandbox need not share a region — a
    security-group allowlist matches on IP, not region. A verified example: an
@@ -348,6 +366,7 @@ gitignored and regenerated on every `make up`.
 | `PROJECT` | `fdai` (Makefile) | resource-name prefix; flows into both Terraform layers and the Databricks secret scope name |
 | `AWS_REGION` | `ap-southeast-1` (bootstrap.sh) | region for both Terraform layers |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` or `AWS_PROFILE` | — | standard AWS SDK credential chain; required for every `terraform apply`/`destroy` |
+| `FDAI_TARGET` | `local` | which broker the dev notebooks read from: `local`, `msk` (uses `INGEST_*` above), or `terraform` (reads the live endpoint from the stack outputs). See [`notebooks/README.md`](../notebooks/README.md). |
 
 ### 5e. Databricks-side state (written by `make up`, never hand-configured)
 
@@ -433,6 +452,18 @@ make compose-up         # single-broker Kafka on localhost:9092
 make test-integration   # end-to-end against the local broker
 make compose-down
 ```
+
+To actually watch data move without any cloud credentials, in two terminals:
+
+```bash
+make stream-local       # compose Kafka + topics + host-run Binance/Coinbase producers
+make notebook           # jupyter lab over notebooks/ (installs the `notebook` group)
+```
+
+`make compose-up` on its own leaves you with an **empty** broker — auto-create
+is off, so there are no topics until something creates them. `make stream-local`
+does that and then runs the producers on the host, which is the only local path
+that delivers messages (§8, first bullet).
 
 ### 7b. Full cloud bootstrap
 
