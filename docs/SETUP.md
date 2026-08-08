@@ -531,16 +531,26 @@ that delivers messages (§8, first bullet).
    | # | Step | Notes |
    |---|---|---|
    | 1–2 | state backend, render `backend.tf` | |
-   | 3 | apply the stack — MSK private, ACLs permissive | ~25–30 min; the cluster create dominates |
+   | 3 | apply the stack — MSK private, ACLs permissive | ~25–30 min on first create; near-instant on a re-run (see below) |
    | 4 | wait for the producer host | polls `/opt/fdai/ready` over SSH, not a timer |
-   | 5 | grant Kafka ACLs from inside the VPC | `scripts/create_acls.py` on the producer host |
+   | 5 | grant Kafka ACLs from inside the VPC | `scripts/create_acls.py` on the producer host, idempotent |
    | 6 | enforce ACLs (`allow.everyone.if.no.acl.found=false`) | MSK's precondition for public access |
    | 7 | enable MSK public access | must be its own apply — see §5f |
    | 8 | topics, Databricks secrets, smoke test | |
 
    Steps 3, 6, and 7 are three separate cluster operations, each of which AWS
-   applies serially, so **budget 45–60 minutes** rather than the 20 this
-   originally targeted. Why the order cannot be compressed is §5f.
+   applies serially, so **budget 45–60 minutes** on the first-ever run rather
+   than the 20 this originally targeted. Why the order cannot be compressed
+   is §5f.
+
+   Step 3 also checks whether the cluster already finished a previous run
+   (already public, already locked down) before deciding what to apply. If
+   so, it asserts that end state directly instead of walking back through
+   "permissive" — doing the latter would try to loosen ACL enforcement while
+   public access is still on, which AWS refuses for the same reason it
+   refuses turning public access on with no ACLs. Steps 6–7 are then skipped
+   as already done. This makes `make up` safe to re-run after a failure in a
+   later step without touching the cluster again.
 4. Read the final `Ready.` block for the public/private broker DNS, the
    producer host's IP, and the `ssh` command for it.
 5. `make down` when finished — destroys the sandbox stack and the state

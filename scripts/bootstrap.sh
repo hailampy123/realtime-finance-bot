@@ -20,6 +20,16 @@
 # is the one thing in there, so this script SSHes to it. That is also why it
 # waits on a readiness file rather than sleeping: tightening the cluster before
 # the ACLs land bricks it until someone re-applies with msk_restrict_acls=false.
+#
+# Re-running this script against a cluster that already finished all three
+# phases is a real case (e.g. step 8 failed for an unrelated reason and you
+# just want to retry it) and needs different handling: walking phase 1 again
+# would ask AWS to loosen ACL enforcement while public access is still on --
+# the same rule that blocks enabling public access with no ACLs, just hit from
+# the other direction. So step 3 first checks whether the cluster is already
+# public; if so, it asserts the finished end state directly (a no-op for MSK,
+# but it still refreshes the security-group rule for today's operator IP)
+# instead of walking back through "permissive" first.
 set -euo pipefail
 
 PROJECT="${PROJECT:-fdai}"
@@ -28,6 +38,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV="${ROOT}/infra/envs/dev"
 SSH_KEY="${DEV}/.ssh/${PROJECT}-producer.pem"
 HOST_READY_TIMEOUT="${HOST_READY_TIMEOUT:-900}"
+BROKER_READY_TIMEOUT="${BROKER_READY_TIMEOUT:-300}"
 
 # The two layers take their region independently — this one from AWS_REGION,
 # the dev stack from terraform.tfvars — so they can drift apart without any
@@ -63,12 +74,31 @@ OPERATOR_IP="$(curl -fsS --max-time 15 https://checkip.amazonaws.com)" || {
 OPERATOR_CIDRS="[\"${OPERATOR_IP}/32\"]"
 echo "    operator IP ${OPERATOR_IP}/32 (producer-host SSH + broker access)"
 
-echo "==> 3/8 applying infrastructure (private, ACLs permissive)"
+echo "==> 3/8 checking whether the cluster already finished a previous run"
 terraform -chdir="${DEV}" init -input=false -reconfigure
-terraform -chdir="${DEV}" apply -auto-approve \
-  -var="msk_public_access=false" \
-  -var="msk_restrict_acls=false" \
-  -var="operator_cidrs=${OPERATOR_CIDRS}"
+
+CLUSTER_ARN="$(terraform -chdir="${DEV}" output -raw cluster_arn 2>/dev/null || true)"
+ALREADY_PUBLIC=""
+if [[ -n "${CLUSTER_ARN}" ]]; then
+  ALREADY_PUBLIC="$(aws kafka get-bootstrap-brokers --region "${DEV_REGION:-${REGION}}" \
+    --cluster-arn "${CLUSTER_ARN}" \
+    --query 'BootstrapBrokerStringPublicSaslScram' --output text 2>/dev/null || true)"
+  [[ "${ALREADY_PUBLIC}" == "None" ]] && ALREADY_PUBLIC=""
+fi
+
+if [[ -n "${ALREADY_PUBLIC}" ]]; then
+  echo "    ${CLUSTER_ARN} is already public and ACL-locked down"
+  echo "    asserting that end state directly (refreshes the SSH/broker allowlist for today's IP)"
+  terraform -chdir="${DEV}" apply -auto-approve \
+    -var="msk_public_access=true" \
+    -var="msk_restrict_acls=true" \
+    -var="operator_cidrs=${OPERATOR_CIDRS}"
+else
+  terraform -chdir="${DEV}" apply -auto-approve \
+    -var="msk_public_access=false" \
+    -var="msk_restrict_acls=false" \
+    -var="operator_cidrs=${OPERATOR_CIDRS}"
+fi
 
 PRODUCER_IP="$(terraform -chdir="${DEV}" output -raw producer_public_ip)"
 SSH_OPTS=(-i "${SSH_KEY}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
@@ -93,19 +123,50 @@ echo "==> 5/8 granting Kafka ACLs from inside the VPC"
 ssh_producer 'sudo docker run --rm --env-file /opt/fdai/app/.env fdai-producers \
   python -m scripts.create_acls'
 
-echo "==> 6/8 enforcing ACLs (allow.everyone.if.no.acl.found=false)"
-terraform -chdir="${DEV}" apply -auto-approve \
-  -var="msk_public_access=false" \
-  -var="msk_restrict_acls=true" \
-  -var="operator_cidrs=${OPERATOR_CIDRS}"
+if [[ -n "${ALREADY_PUBLIC}" ]]; then
+  echo "==> 6/8 enforcing ACLs (already done in step 3) -- skipping"
+  echo "==> 7/8 enabling MSK public access (already done in step 3) -- skipping"
+  BOOTSTRAP_PUBLIC="${ALREADY_PUBLIC}"
+else
+  echo "==> 6/8 enforcing ACLs (allow.everyone.if.no.acl.found=false)"
+  terraform -chdir="${DEV}" apply -auto-approve \
+    -var="msk_public_access=false" \
+    -var="msk_restrict_acls=true" \
+    -var="operator_cidrs=${OPERATOR_CIDRS}"
 
-echo "==> 7/8 enabling MSK public access"
-terraform -chdir="${DEV}" apply -auto-approve \
-  -var="msk_public_access=true" \
-  -var="msk_restrict_acls=true" \
-  -var="operator_cidrs=${OPERATOR_CIDRS}"
+  echo "==> 7/8 enabling MSK public access"
+  terraform -chdir="${DEV}" apply -auto-approve \
+    -var="msk_public_access=true" \
+    -var="msk_restrict_acls=true" \
+    -var="operator_cidrs=${OPERATOR_CIDRS}"
 
-BOOTSTRAP_PUBLIC="$(terraform -chdir="${DEV}" output -raw bootstrap_brokers_public)"
+  # Terraform's provider reads the public bootstrap string exactly once, right
+  # when the connectivity update finishes -- it does not wait for AWS to have
+  # actually finished provisioning the public endpoint by that instant. That
+  # can leave `bootstrap_brokers_public` empty in state for a short window
+  # even though the apply reported success. Poll the AWS API directly rather
+  # than trust the (possibly stale) Terraform output.
+  CLUSTER_ARN="$(terraform -chdir="${DEV}" output -raw cluster_arn)"
+  echo "    waiting for MSK to publish the public bootstrap broker string"
+  deadline=$((SECONDS + BROKER_READY_TIMEOUT))
+  BOOTSTRAP_PUBLIC=""
+  until [[ -n "${BOOTSTRAP_PUBLIC}" ]]; do
+    BOOTSTRAP_PUBLIC="$(aws kafka get-bootstrap-brokers --region "${DEV_REGION:-${REGION}}" \
+      --cluster-arn "${CLUSTER_ARN}" \
+      --query 'BootstrapBrokerStringPublicSaslScram' --output text 2>/dev/null || true)"
+    [[ "${BOOTSTRAP_PUBLIC}" == "None" ]] && BOOTSTRAP_PUBLIC=""
+    if [[ -z "${BOOTSTRAP_PUBLIC}" ]]; then
+      if ((SECONDS > deadline)); then
+        echo "public bootstrap brokers never appeared after ${BROKER_READY_TIMEOUT}s." >&2
+        echo "Check directly:" >&2
+        echo "  aws kafka get-bootstrap-brokers --region ${DEV_REGION:-${REGION}} --cluster-arn ${CLUSTER_ARN}" >&2
+        exit 1
+      fi
+      sleep 15
+    fi
+  done
+fi
+
 BOOTSTRAP_PRIVATE="$(terraform -chdir="${DEV}" output -raw bootstrap_brokers_private)"
 SASL_USER="$(terraform -chdir="${DEV}" output -raw sasl_username)"
 SASL_PASS="$(terraform -chdir="${DEV}" output -raw sasl_password)"
