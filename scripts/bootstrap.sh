@@ -6,7 +6,7 @@
 set -euo pipefail
 
 PROJECT="${PROJECT:-fdai}"
-REGION="${AWS_REGION:-us-east-1}"
+REGION="${AWS_REGION:-ap-southeast-1}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV="${ROOT}/infra/envs/dev"
 

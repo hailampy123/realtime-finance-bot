@@ -7,5 +7,5 @@ variable "project" {
 variable "region" {
   description = "AWS region for the sandbox stack."
   type        = string
-  default     = "us-east-1"
+  default     = "ap-southeast-1"
 }

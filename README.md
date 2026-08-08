@@ -2,6 +2,8 @@
 
 Streaming market-data and LLM trading-decision platform.
 Design: [`docs/superpowers/specs/2026-08-07-finance-data-ai-platform-design.md`](docs/superpowers/specs/2026-08-07-finance-data-ai-platform-design.md)
+Setup, prerequisites, manual AWS/Databricks steps, data sources, and config variables: [`docs/SETUP.md`](docs/SETUP.md)
+Current-state diagrams (data flow + deployed AWS topology, built vs. designed-only): [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
 ## The reproducibility contract
 
@@ -56,6 +58,34 @@ docker compose -f docker/compose.yaml --profile live up --build
 Records are bare Avro datums (no registry, no magic byte) with the schema
 version in a Kafka header. Producer and Spark reader load the same `.avsc` from
 `ingest/schemas/`, so drift is impossible by construction.
+
+## Consuming trade data
+
+After `make up` (or `make compose-up` locally), trades are flowing but nothing
+is yet reading them into a lakehouse — Stage 2 (Databricks Bronze/Silver/Gold)
+is designed, not implemented (see
+[`docs/superpowers/specs/2026-08-08-data-layer-batch-history-and-serving-design.md`](docs/superpowers/specs/2026-08-08-data-layer-batch-history-and-serving-design.md)).
+Two ways to consume in the meantime:
+
+**Ad-hoc local consumer** — decodes the same bare Avro the producer writes and
+computes a rolling per-instrument VWAP:
+
+```bash
+uv run python -m scripts.consume_example \
+  --bootstrap "$(terraform -chdir=infra/envs/dev output -raw bootstrap_brokers_public)" \
+  --username  "$(terraform -chdir=infra/envs/dev output -raw sasl_username)" \
+  --password  "$(terraform -chdir=infra/envs/dev output -raw sasl_password)"
+```
+
+(or `--bootstrap localhost:9092` with no credentials against `make compose-up`).
+
+**Databricks Structured Streaming** (the intended production path once Stage 2
+ships) — read the Kafka topic with `spark.readStream.format("kafka")`
+authenticated via `kafkashaded.org.apache.kafka.common.security.scram...`
+JAAS config sourced from the `${PROJECT}` secret scope (published by `make up`),
+decode with `pyspark.sql.avro.functions.from_avro(col("value"), open("ingest/schemas/trade.v1.avsc").read())`
+since there's no registry, then transform/aggregate as usual — e.g. a windowed
+`groupBy(window("event_ts", "1 minute"), "instrument_id")` for 1-minute bars.
 
 ## Known limitations
 

@@ -482,7 +482,7 @@ fallback, following the parent spec's §2 pattern.
 | A2 | DBR 17.3+ for metric views with semantic metadata | 16.4+ still supports creation; lose Genie synonyms |
 | A3 | Metric view `parameters` available | `*_pit` becomes a plain view with a static filter per as_of, or enforcement falls back to the tool server only |
 | A4 | Serverless enabled | Lose `*_current` materialization and Vector Search; views become non-materialized, RAG moves to a Delta-table keyword search |
-| A5 | AUTO CDC available (edition ADVANCED or serverless) | Hand-written `MERGE` in the wheel; Silver leaves DLT |
+| A5 | AUTO CDC available — **verified:** needs serverless *or* the `Pro`/`Advanced` pipeline edition, so classic satisfies it | Hand-written `MERGE` in the wheel; Silver leaves DLT |
 | A6 | CDF readable on an AUTO CDC target | Fall back to an explicit `dirty_partitions` table written by each writer |
 | A7 | Genie cannot pass metric-view parameters | Already assumed false-safe: Genie is restricted to `*_current` (§7.4) |
 | A8 | `dbutils.secrets.get` works in serverless DLT | UC service credential via `databricks.serviceCredential` |
@@ -491,6 +491,41 @@ fallback, following the parent spec's §2 pattern.
 
 A1 and A5 are the only two that would force a structural redesign. The rest degrade
 gracefully.
+
+### 11.1 Compute placement is fixed by network egress
+
+The DLT pipeline **runs on classic compute**, and this is a constraint rather than a
+preference.
+
+MSK is reached over a public endpoint guarded by a security-group IP allowlist
+(`kafka_client_cidrs`). Classic compute egresses through the workspace VPC's NAT Gateway
+Elastic IP — one stable `/32`. Serverless does not: it egresses from Databricks-managed
+infrastructure with entirely different addresses, and Databricks states that firewall
+configuration *"affects connectivity from classic compute resources"* as a separate concern
+([serverless-firewall-config]). The NCC "stable IPs" mechanism that previously solved this
+was **decommissioned on 2026-05-25**; the supported replacement is a published
+`ip-ranges.json` whose entries *"can change as often as once every 30 days"* and are
+Databricks-wide rather than per-customer.
+
+Allowlisting a rotating shared range to reach a broker is strictly worse than allowlisting
+one `/32` you own. Since AUTO CDC does not require serverless (A5), classic is both
+available and correct here.
+
+This partitions cleanly, because **no serverless component reads Kafka**:
+
+| Component | Compute | Reaches |
+|---|---|---|
+| DLT pipeline (Bronze→Silver) | classic, `Pro`/`Advanced` | MSK over the allowlisted `/32` |
+| Backfill + Gold jobs | either | `data.binance.vision` and UC Delta only |
+| `*_current` materialization | serverless | UC Delta only |
+| Vector Search | serverless | UC Delta only |
+
+One further check before assuming egress works at all: a workspace's network policy can
+block external destinations regardless of the MSK security group. Under Restricted Access,
+serverless reaches only UC external locations and policy-listed FQDNs — an external Kafka
+broker is refused outright.
+
+[serverless-firewall-config]: https://docs.databricks.com/aws/en/security/network/serverless-network-security/serverless-firewall-config
 
 ## 12. Decomposition into implementation plans
 
