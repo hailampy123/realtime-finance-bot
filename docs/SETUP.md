@@ -543,6 +543,10 @@ that delivers messages (§8, first bullet).
    than the 20 this originally targeted. Why the order cannot be compressed
    is §5f.
 
+   For what each AWS resource in this stack actually *is* and why it's there —
+   written for someone new to Terraform and AWS — see
+   [`docs/MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md).
+
    Step 3 also checks whether the cluster already finished a previous run
    (already public, already locked down) before deciding what to apply. If
    so, it asserts that end state directly instead of walking back through

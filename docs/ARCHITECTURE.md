@@ -10,7 +10,12 @@ For the target end-state these diagrams intentionally do **not** show, see
 [`docs/superpowers/specs/2026-08-07-finance-data-ai-platform-design.md`](superpowers/specs/2026-08-07-finance-data-ai-platform-design.md)
 (parent architecture) and
 [`docs/superpowers/specs/2026-08-08-data-layer-batch-history-and-serving-design.md`](superpowers/specs/2026-08-08-data-layer-batch-history-and-serving-design.md)
-(lakehouse). For install/config steps, see [`docs/SETUP.md`](SETUP.md).
+(lakehouse). For install/config steps, see [`docs/SETUP.md`](SETUP.md). For a
+resource-by-resource explanation of what `make up` creates and why — written for
+someone new to Terraform and AWS — see
+[`docs/MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md), and for Kafka concepts
+grounded in this repo's own config,
+[`docs/KAFKA_EXPLAINED.md`](KAFKA_EXPLAINED.md).
 
 ## 1. Data flow — what's actually moving today
 
