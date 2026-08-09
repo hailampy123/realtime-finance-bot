@@ -27,7 +27,7 @@ test-integration: compose-up
 
 .PHONY: stream-local notebook notebook-test notebook-clean
 
-LOCAL_BOOTSTRAP ?= localhost:9092
+LOCAL_BOOTSTRAP ?= 127.0.0.1:9092
 
 # The local path to actually having data to look at. `compose-up` alone gives
 # an empty broker: auto-create is off, so the topics must be made first, and

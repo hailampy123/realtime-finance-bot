@@ -127,7 +127,7 @@ since there's no registry, then transform/aggregate as usual — e.g. a windowed
 - **Equity coverage is IEX-only (~2% of volume)** on Alpaca's free tier. Crypto
   carries the real streaming workload.
 - **`docker compose --profile live` cannot deliver messages to the local broker.**
-  The Kafka container advertises `PLAINTEXT://localhost:9092`, which resolves to
+  The Kafka container advertises the host loopback address, which points to
   the `producers` container itself rather than the broker when run from inside a
   sibling container — a known Kafka-in-Docker single-listener limitation.
   Producers work correctly against a real MSK cluster (the actual deployment

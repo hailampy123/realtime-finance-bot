@@ -21,7 +21,7 @@ from typing import Any
 
 from ingest.settings import Settings
 
-LOCAL_BOOTSTRAP = "localhost:9092"
+LOCAL_BOOTSTRAP = "127.0.0.1:9092"
 DEFAULT_TARGET = "local"
 # Absolute, not "infra/envs/dev": Jupyter runs a notebook's kernel with its cwd
 # set to the notebook's own folder, not the repo root, so a relative default

@@ -3,6 +3,7 @@
 Guarded by RUN_INTEGRATION=1 so `make test` stays fast and hermetic.
 """
 
+import socket
 import uuid
 
 import pytest
@@ -13,7 +14,20 @@ from ingest.core.codec import TRADE_SCHEMA_VERSION, trade_codec
 from ingest.core.models import Side, Source, Trade
 from ingest.core.producer import TradeProducer
 
-BOOTSTRAP = "localhost:9092"
+BOOTSTRAP = "127.0.0.1:9092"
+
+
+def test_every_advertised_broker_address_is_reachable_from_the_host():
+    """A client may select any address returned for the advertised hostname."""
+    metadata = AdminClient({"bootstrap.servers": BOOTSTRAP}).list_topics(timeout=15)
+
+    for broker in metadata.brokers.values():
+        addresses = socket.getaddrinfo(broker.host, broker.port, type=socket.SOCK_STREAM)
+        assert addresses
+        for family, socktype, proto, _, sockaddr in addresses:
+            with socket.socket(family, socktype, proto) as client:
+                client.settimeout(2)
+                client.connect(sockaddr)
 
 
 @pytest.fixture
