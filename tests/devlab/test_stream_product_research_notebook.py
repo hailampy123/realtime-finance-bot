@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 NOTEBOOK = Path("notebooks/04_stream_product_research.ipynb")
 
 
@@ -14,17 +13,13 @@ def load_notebook() -> dict[str, Any]:
 
 def code_source(notebook: dict[str, Any]) -> str:
     return "\n".join(
-        "".join(cell["source"])
-        for cell in notebook["cells"]
-        if cell["cell_type"] == "code"
+        "".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "code"
     )
 
 
 def markdown_source(notebook: dict[str, Any]) -> str:
     return "\n".join(
-        "".join(cell["source"])
-        for cell in notebook["cells"]
-        if cell["cell_type"] == "markdown"
+        "".join(cell["source"]) for cell in notebook["cells"] if cell["cell_type"] == "markdown"
     )
 
 
@@ -65,3 +60,43 @@ def test_notebook_explains_the_research_scope():
     ):
         assert heading in markdown
     assert "not executable arbitrage" in markdown
+
+
+def test_notebook_defines_every_research_result_and_runtime_invariant():
+    source = code_source(load_notebook())
+
+    for result in (
+        "coverage",
+        "latency_summary",
+        "quality_metrics",
+        "activity",
+        "volatility_ranking",
+        "spread_summary",
+        "leadership",
+        "recommendations",
+    ):
+        assert result in source
+
+    for invariant in (
+        'assert (clean_df["size"] >= 0).all()',
+        "assert not clean_df.duplicated(subset=NATURAL_KEY).any()",
+        'assert (clean_df["notional"] >= 0).all()',
+        'assert recommendations["metric"].str.len().gt(0).all()',
+        'assert recommendations["measured_value"].notna().all()',
+    ):
+        assert invariant in source
+
+
+def test_recommendations_have_an_evidence_contract():
+    source = code_source(load_notebook())
+
+    for field in (
+        '"metric"',
+        '"measured_value"',
+        '"evidence_strength"',
+        '"proposed_product"',
+        '"layer"',
+        '"validation_or_sla"',
+        '"priority"',
+    ):
+        assert field in source
