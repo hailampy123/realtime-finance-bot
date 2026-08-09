@@ -16,13 +16,18 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ingest.settings import Settings
 
 LOCAL_BOOTSTRAP = "localhost:9092"
 DEFAULT_TARGET = "local"
-DEFAULT_TERRAFORM_DIR = "infra/envs/dev"
+# Absolute, not "infra/envs/dev": Jupyter runs a notebook's kernel with its cwd
+# set to the notebook's own folder, not the repo root, so a relative default
+# here would resolve against notebooks/ and silently point at a path that
+# doesn't exist.
+DEFAULT_TERRAFORM_DIR = Path(__file__).resolve().parent.parent / "infra" / "envs" / "dev"
 TERRAFORM_TIMEOUT_S = 60.0
 
 
@@ -103,7 +108,21 @@ def msk() -> Target:
     )
 
 
-def _terraform_output(chdir: str, name: str) -> str:
+# Substrings AWS uses for "the credentials themselves are the problem" --
+# distinct from "the stack doesn't exist", which is a different failure with a
+# different fix. A Jupyter kernel's environment is frozen at the moment the
+# notebook *server* process started; refreshing credentials in a terminal
+# afterwards does not reach a kernel that was already running.
+_CREDENTIAL_ERROR_MARKERS = (
+    "InvalidClientTokenId",
+    "ExpiredToken",
+    "could not be validated",
+    "UnrecognizedClientException",
+    "is not authorized to perform",
+)
+
+
+def _terraform_output(chdir: str | Path, name: str) -> str:
     try:
         result = subprocess.run(
             ["terraform", f"-chdir={chdir}", "output", "-raw", name],
@@ -119,14 +138,28 @@ def _terraform_output(chdir: str, name: str) -> str:
             f"`terraform output {name}` timed out after {TERRAFORM_TIMEOUT_S}s"
         ) from exc
     if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if any(marker in stderr for marker in _CREDENTIAL_ERROR_MARKERS):
+            raise TargetError(
+                "AWS credentials are invalid or expired in *this process* -- this is not "
+                "necessarily true in your terminal, and re-running `make up` will not fix it. "
+                "1) In the terminal where `make up` last worked, run "
+                "`aws sts get-caller-identity` to confirm credentials are still valid there -- "
+                "sandbox session tokens commonly expire in hours, well before the account's "
+                "7-day wipe. 2) If that succeeds but this still fails, the Jupyter kernel's "
+                "environment was frozen when the notebook *server* started and never saw your "
+                "terminal's refreshed credentials. Fully stop Jupyter (not just restart the "
+                "kernel) and start it again -- `make notebook` -- from a terminal with valid "
+                f"credentials already exported.\n{stderr}"
+            )
         raise TargetError(
             f"`terraform -chdir={chdir} output -raw {name}` failed. Is the stack up? "
-            f"Run `make up` first.\n{result.stderr.strip()}"
+            f"Run `make up` first.\n{stderr}"
         )
     return result.stdout.strip()
 
 
-def from_terraform(chdir: str = DEFAULT_TERRAFORM_DIR) -> Target:
+def from_terraform(chdir: str | Path = DEFAULT_TERRAFORM_DIR) -> Target:
     """Read the live MSK endpoint and SCRAM credentials from the dev stack.
 
     Slower than `msk()` (three subprocesses) but always correct — broker DNS is

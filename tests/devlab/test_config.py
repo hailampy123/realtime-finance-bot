@@ -127,3 +127,37 @@ def test_from_terraform_builds_a_target(monkeypatch):
     target = config.from_terraform()
     assert target.bootstrap == "b-1.msk:9196"
     assert target.uses_sasl is True
+
+
+def test_expired_credentials_get_a_distinct_message_from_a_missing_stack(monkeypatch):
+    # "Is the stack up? Run make up" is actively wrong advice when the real
+    # problem is a stale token in *this* process -- re-running make up from a
+    # terminal with valid credentials would just succeed, masking that a
+    # Jupyter kernel's environment is what's actually stale.
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = (
+            "Error: validating provider credentials: retrieving caller identity from STS: "
+            "operation error STS: GetCallerIdentity, https response error StatusCode: 403, "
+            "RequestID: x, api error InvalidClientTokenId: The security token included in "
+            "the request is invalid."
+        )
+
+    monkeypatch.setattr(config.subprocess, "run", lambda *a, **k: Result())
+    with pytest.raises(TargetError, match="credentials are invalid or expired") as excinfo:
+        config.from_terraform()
+    # The improved message still mentions `make up` (to say it won't help) --
+    # what must NOT survive is the old, actively-wrong generic phrasing.
+    assert "Is the stack up? Run" not in str(excinfo.value)
+
+
+def test_a_genuinely_missing_stack_keeps_the_make_up_hint(monkeypatch):
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = 'Error: Output "cluster_arn" not found'
+
+    monkeypatch.setattr(config.subprocess, "run", lambda *a, **k: Result())
+    with pytest.raises(TargetError, match="make up"):
+        config.from_terraform()

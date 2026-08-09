@@ -31,6 +31,10 @@ class TopicMissing(RuntimeError):
     """The topic does not exist on the broker."""
 
 
+class BrokerUnavailable(RuntimeError):
+    """The broker could not be reached, so its topics could not be inspected."""
+
+
 def _check_topic(client: Any, topic: str, target: Target) -> None:
     """Fail fast and specifically instead of polling an absent topic forever.
 
@@ -41,8 +45,16 @@ def _check_topic(client: Any, topic: str, target: Target) -> None:
     try:
         metadata = client.list_topics(timeout=METADATA_TIMEOUT_S)
     except KafkaException as exc:
-        raise TopicMissing(
-            f"could not reach the broker at {target.bootstrap!r} (target {target.name!r}): {exc}"
+        hint = (
+            "For public MSK, verify that the endpoint is current with "
+            "`devlab.from_terraform()` and that this machine's current public IP is "
+            "allowlisted; after refreshing AWS credentials, re-run `make up` to refresh it."
+            if target.name == "msk"
+            else "For the local target, start Kafka with `make compose-up`."
+        )
+        raise BrokerUnavailable(
+            f"could not reach the broker at {target.bootstrap!r} (target {target.name!r}) "
+            f"before the topic could be checked: {exc}. {hint}"
         ) from exc
     if topic in metadata.topics:
         return

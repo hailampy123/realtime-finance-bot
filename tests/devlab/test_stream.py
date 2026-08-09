@@ -4,9 +4,25 @@ from contextlib import contextmanager
 from typing import Any
 
 import pytest
+from confluent_kafka import KafkaError, KafkaException
 
 from devlab import config, stream
 from tests.devlab.conftest import record
+
+
+def test_transport_failure_is_not_reported_as_a_missing_topic():
+    """A network failure happens before Kafka can establish topic existence."""
+
+    class UnreachableConsumer:
+        def list_topics(self, *, timeout: float):
+            raise KafkaException(KafkaError(KafkaError._TRANSPORT))
+
+    target = config.Target("msk", "broker.example:9196", "user", "secret")
+    with pytest.raises(stream.BrokerUnavailable, match="before the topic could be checked") as exc:
+        stream._check_topic(UnreachableConsumer(), "md.trades.v1", target)
+
+    assert not isinstance(exc.value, stream.TopicMissing)
+    assert "current public IP" in str(exc.value)
 
 
 class FakeMessage:

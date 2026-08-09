@@ -1,13 +1,14 @@
 # Local dev notebooks
 
 An interactive loop over the live trade streams, separate from the runtime
-package. Three notebooks over one small helper library ([`devlab/`](../devlab)):
+package. Four notebooks over one small helper library ([`devlab/`](../devlab)):
 
 | Notebook | Question it answers |
 |---|---|
 | [`00_stream_health.ipynb`](00_stream_health.ipynb) | Is the stream alive, and is it complete? Topic contents, partition balance, live arrival rate, sequence gaps, consumer lag. |
 | [`01_explore_trades.ipynb`](01_explore_trades.ipynb) | What is actually in the data? A bounded window as a DataFrame, price and volume plots, ingest latency, Binance vs. Coinbase spread. |
 | [`02_prototype_silver.ipynb`](02_prototype_silver.ipynb) | Are the Stage 2 transforms right? Natural-key dedupe and event-time bars in pandas, each with the PySpark it maps to. |
+| [`03_msk_live_experiment.ipynb`](03_msk_live_experiment.ipynb) | A quick, minimal look at the deployed MSK cluster specifically — unlike the others, it calls `devlab.from_terraform()` directly rather than the switchable `devlab.resolve()`, so there's no ambiguity about which broker it's reading. |
 
 ## Setup
 
@@ -109,6 +110,35 @@ what arrives *after* the call) when you meant `"earliest"`.
 **`TopicMissing`** — the broker is reachable but the topic is not there.
 `make compose-up` alone does not create topics and auto-create is off;
 `make stream-local` does.
+
+**`TargetError: AWS credentials are invalid or expired`** from
+`devlab.from_terraform()` — the credentials in *this process* are stale, which
+is not necessarily true in your terminal. Sandbox session tokens commonly
+expire in hours, well before the account's 7-day wipe, and a running Jupyter
+kernel never sees a terminal's credentials refresh after the kernel started.
+Check in order:
+
+1. In the terminal where `make up` last worked: `aws sts get-caller-identity`.
+   If this also fails, your credentials themselves expired — refresh them
+   there (re-export keys, or `aws sso login --profile <name>` if using SSO).
+2. If that succeeds but the notebook still fails, the kernel's environment is
+   what's stale. For SSO: run `!aws sso login --profile <name>` in a cell (see
+   `03_msk_live_experiment.ipynb`'s second cell) — no restart needed, since
+   AWS's tools re-read the SSO cache from disk on every call. For raw/temporary
+   keys: set them in a cell via `getpass` rather than typing literal values
+   into cell source, which `nbstripout` does not clean up:
+
+   ```python
+   import getpass
+   import os
+
+   os.environ["AWS_ACCESS_KEY_ID"] = getpass.getpass("AWS_ACCESS_KEY_ID: ")
+   os.environ["AWS_SECRET_ACCESS_KEY"] = getpass.getpass("AWS_SECRET_ACCESS_KEY: ")
+   os.environ["AWS_SESSION_TOKEN"] = getpass.getpass("AWS_SESSION_TOKEN (blank if none): ")
+   ```
+
+   If neither works, fully stop Jupyter (not just restart the kernel) and
+   start it again — `make notebook` — from a terminal with valid credentials.
 
 ## Tests
 
