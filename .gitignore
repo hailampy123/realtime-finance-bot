@@ -9,6 +9,7 @@ __pycache__/
 .venv/
 .DS_Store
 .superpowers/
+.worktrees/
 .claude/worktrees/
 graphify-out/
 *.egg-info/
