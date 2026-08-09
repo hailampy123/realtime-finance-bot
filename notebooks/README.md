@@ -1,7 +1,7 @@
 # Local dev notebooks
 
 An interactive loop over the live trade streams, separate from the runtime
-package. Four notebooks over one small helper library ([`devlab/`](../devlab)):
+package. Five notebooks over one small helper library ([`devlab/`](../devlab)):
 
 | Notebook | Question it answers |
 |---|---|
@@ -9,6 +9,7 @@ package. Four notebooks over one small helper library ([`devlab/`](../devlab)):
 | [`01_explore_trades.ipynb`](01_explore_trades.ipynb) | What is actually in the data? A bounded window as a DataFrame, price and volume plots, ingest latency, Binance vs. Coinbase spread. |
 | [`02_prototype_silver.ipynb`](02_prototype_silver.ipynb) | Are the Stage 2 transforms right? Natural-key dedupe and event-time bars in pandas, each with the PySpark it maps to. |
 | [`03_msk_live_experiment.ipynb`](03_msk_live_experiment.ipynb) | A quick, minimal look at the deployed MSK cluster specifically — unlike the others, it calls `devlab.from_terraform()` directly rather than the switchable `devlab.resolve()`, so there's no ambiguity about which broker it's reading. |
+| [`04_stream_product_research.ipynb`](04_stream_product_research.ipynb) | What does one selected stream reveal about source quality, latency, activity, volatility, cross-venue structure, and the next Bronze/Silver/Gold data products? |
 
 ## Setup
 
@@ -32,7 +33,7 @@ make stream-local      # leave running in its own terminal
 That brings up the compose broker, creates the topics, and runs the
 Binance + Coinbase producers **on the host**. The host part is not incidental:
 the `producers` compose service cannot reach the broker from inside a sibling
-container, because Kafka advertises `PLAINTEXT://localhost:9092` and there is
+container, because Kafka advertises the host loopback address and there is
 only one listener (see the README's "Known limitations"). Running the producer
 on the host sidesteps it. `make compose-up` alone gives you an empty broker
 with auto-create disabled — no topics, no data.
@@ -53,15 +54,20 @@ target = devlab.from_terraform()
 
 ## Switching targets
 
-Every notebook opens with `devlab.resolve()`, which reads `$FDAI_TARGET`
-(`local` by default, or `msk`, or `terraform`). No notebook mentions a
-hostname, so flipping the variable moves all three with no edits.
+Notebooks `00`–`02` open with `devlab.resolve()`, which reads `$FDAI_TARGET`
+(`local` by default, or `msk`, or `terraform`). Notebook `03` is deliberately
+pinned to MSK. The research notebook `04` keeps its selection explicit and
+analyzes one target per run:
 
 ```python
-import devlab
-
-target = devlab.resolve()  # or devlab.resolve("msk")
+TARGET = "local"       # "local" or "msk"
+RUN_MODE = "quick"     # "quick" (20k/60s) or "deep" (200k/10min)
 ```
+
+`04_stream_product_research.ipynb` is strictly read-only. It uses
+`devlab.local()` for local mode and live Terraform outputs through
+`devlab.from_terraform()` for MSK mode; it never writes Kafka offsets, topics,
+files, or infrastructure.
 
 ## The library
 
@@ -96,11 +102,10 @@ make notebook-clean    # nbstripout notebooks/*.ipynb
 
 ## Troubleshooting
 
-**`Connect to ipv6#[::1]:9092 failed: Connection refused`** — noise, not an
-error. librdkafka resolves `localhost` to both `::1` and `127.0.0.1` and tries
-IPv6 first; the compose broker binds IPv4 only, so it falls back and connects.
-It also appears during `make stream-local` and `scripts/create_topics`.
-Silence it with `bootstrap="127.0.0.1:9092"` if it bothers you.
+**`Connect to ipv6#[::1]:9092 failed: Connection refused`** — the local
+configuration is stale. The repository now uses `127.0.0.1:9092` explicitly;
+recreate Kafka with `make compose-down && make stream-local` so the broker
+advertises the corrected address.
 
 **A read returns nothing.** Check in this order: is `make stream-local` still
 running in its other terminal; does `devlab.topics(target)` show a non-zero
