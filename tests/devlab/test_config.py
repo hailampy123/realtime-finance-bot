@@ -150,6 +150,7 @@ def test_expired_credentials_get_a_distinct_message_from_a_missing_stack(monkeyp
     # The improved message still mentions `make up` (to say it won't help) --
     # what must NOT survive is the old, actively-wrong generic phrasing.
     assert "Is the stack up? Run" not in str(excinfo.value)
+    assert "make notebook TARGET=msk" in str(excinfo.value)
 
 
 def test_a_genuinely_missing_stack_keeps_the_make_up_hint(monkeypatch):
@@ -163,7 +164,7 @@ def test_a_genuinely_missing_stack_keeps_the_make_up_hint(monkeypatch):
         config.from_terraform()
 
 
-def test_a_successful_but_empty_bootstrap_output_is_not_treated_as_working(monkeypatch):
+def test_empty_terraform_bootstrap_falls_back_to_the_live_aws_endpoint(monkeypatch):
     # AWS's GetBootstrapBrokers is fetched by the provider exactly once, at the
     # moment public connectivity finishes, and Terraform caches whatever it got --
     # including empty, if AWS was not ready yet (see infra/envs/dev/outputs.tf).
@@ -172,6 +173,10 @@ def test_a_successful_but_empty_bootstrap_output_is_not_treated_as_working(monke
     # build a Target that fails confusingly three calls later.
     outputs = {
         "bootstrap_brokers_public": "",
+        "cluster_arn": (
+            "arn:aws:kafka:us-east-1:160071257600:cluster/"
+            "fdai-kafka/3917b19e-4114-414b-a4be-d7c8c3cbe328-23"
+        ),
         "sasl_username": "fdai-producer",
         "sasl_password": "secret",
     }
@@ -184,12 +189,15 @@ def test_a_successful_but_empty_bootstrap_output_is_not_treated_as_working(monke
             self.stdout = stdout
 
     def fake_run(cmd, **kwargs):
-        return Result(outputs[cmd[-1]] + "\n")
+        if cmd[0] == "terraform":
+            return Result(outputs[cmd[-1]] + "\n")
+        assert cmd[:3] == ["aws", "kafka", "get-bootstrap-brokers"]
+        assert cmd[cmd.index("--region") + 1] == "us-east-1"
+        return Result("b-1-public.live-msk.amazonaws.com:9196\n")
 
     monkeypatch.setattr(config.subprocess, "run", fake_run)
-    with pytest.raises(TargetError, match="cached") as excinfo:
-        config.from_terraform()
-    # Must not read like the credentials-expired or missing-stack cases --
-    # re-running `make up` does not fix this, since bootstrap.sh never writes
-    # its own AWS-CLI-polled value back into Terraform's cached output.
-    assert "make up` will NOT fix" in str(excinfo.value)
+    target = config.from_terraform()
+
+    assert target.bootstrap == "b-1-public.live-msk.amazonaws.com:9196"
+    assert target.sasl_username == "fdai-producer"
+    assert target.uses_sasl is True

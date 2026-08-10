@@ -510,7 +510,8 @@ To actually watch data move without any cloud credentials, in two terminals:
 
 ```bash
 make stream-local       # compose Kafka + topics + host-run Binance/Coinbase producers
-make notebook           # jupyter lab over notebooks/ (installs the `notebook` group)
+make notebook TARGET=local  # local broker; installs the `notebook` group
+make notebook TARGET=msk    # refreshes MSK access, verifies it, then starts Jupyter
 ```
 
 `make compose-up` on its own leaves you with an **empty** broker — auto-create

@@ -142,38 +142,60 @@ def _terraform_output(chdir: str | Path, name: str) -> str:
         if any(marker in stderr for marker in _CREDENTIAL_ERROR_MARKERS):
             raise TargetError(
                 "AWS credentials are invalid or expired in *this process* -- this is not "
-                "necessarily true in your terminal, and re-running `make up` will not fix it. "
-                "1) In the terminal where `make up` last worked, run "
-                "`aws sts get-caller-identity` to confirm credentials are still valid there -- "
-                "sandbox session tokens commonly expire in hours, well before the account's "
-                "7-day wipe. 2) If that succeeds but this still fails, the Jupyter kernel's "
-                "environment was frozen when the notebook *server* started and never saw your "
-                "terminal's refreshed credentials. Fully stop Jupyter (not just restart the "
-                "kernel) and start it again -- `make notebook` -- from a terminal with valid "
-                f"credentials already exported.\n{stderr}"
+                "necessarily true in another terminal. Fully stop this Jupyter server and "
+                "launch it through `make notebook TARGET=msk`; that command selects the "
+                "configured AWS profile, refreshes SSO when necessary, updates the current "
+                "operator IP through Terraform, and passes the same clean environment to the "
+                f"new kernel.\n{stderr}"
             )
         raise TargetError(
             f"`terraform -chdir={chdir} output -raw {name}` failed. Is the stack up? "
             f"Run `make up` first.\n{stderr}"
         )
-    value = result.stdout.strip()
-    if not value and name == "bootstrap_brokers_public":
-        raise TargetError(
-            "`bootstrap_brokers_public` is empty in Terraform state, even though "
-            "this call succeeded -- credentials and the stack itself are fine. AWS's "
-            "GetBootstrapBrokers is fetched by the provider exactly once, at the "
-            "moment public connectivity finishes, and Terraform caches whatever it "
-            "got then, including empty if AWS was not ready yet "
-            "(see infra/envs/dev/outputs.tf). Re-running `make up` will NOT fix "
-            "this: it never writes its own AWS-CLI-polled value back into "
-            "Terraform's cached output. Get the real endpoint directly:\n"
-            f"  aws kafka get-bootstrap-brokers --cluster-arn "
-            f"$(terraform -chdir={chdir} output -raw cluster_arn) "
-            "--query 'BootstrapBrokerStringPublicSaslScram' --output text\n"
-            "Then use devlab.msk() with that value in .env, or build a Target(...) "
-            "directly."
+    return result.stdout.strip()
+
+
+def _aws_public_brokers(cluster_arn: str) -> str:
+    try:
+        region = cluster_arn.split(":", maxsplit=4)[3]
+    except IndexError as exc:
+        raise TargetError(f"invalid MSK cluster ARN in Terraform state: {cluster_arn!r}") from exc
+    if not region:
+        raise TargetError(f"invalid MSK cluster ARN in Terraform state: {cluster_arn!r}")
+
+    try:
+        result = subprocess.run(
+            [
+                "aws",
+                "kafka",
+                "get-bootstrap-brokers",
+                "--cluster-arn",
+                cluster_arn,
+                "--region",
+                region,
+                "--query",
+                "BootstrapBrokerStringPublicSaslScram",
+                "--output",
+                "text",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=TERRAFORM_TIMEOUT_S,
+            check=False,
         )
-    return value
+    except FileNotFoundError as exc:
+        raise TargetError("aws is not on PATH; see docs/SETUP.md §1") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise TargetError(f"AWS broker discovery timed out after {TERRAFORM_TIMEOUT_S}s") from exc
+
+    brokers = result.stdout.strip()
+    if result.returncode != 0 or brokers in ("", "None"):
+        raise TargetError(
+            "Terraform's public broker output is empty and AWS could not return the "
+            "live endpoint. Run `make notebook TARGET=msk` to refresh and verify "
+            f"notebook access.\n{result.stderr.strip()}"
+        )
+    return brokers
 
 
 def from_terraform(chdir: str | Path = DEFAULT_TERRAFORM_DIR) -> Target:
@@ -183,9 +205,14 @@ def from_terraform(chdir: str | Path = DEFAULT_TERRAFORM_DIR) -> Target:
     regenerated on every `make up`, so this is the only source that cannot go
     stale. Cache the result in a variable rather than calling it per cell.
     """
+    bootstrap = _terraform_output(chdir, "bootstrap_brokers_public")
+    if not bootstrap:
+        cluster_arn = _terraform_output(chdir, "cluster_arn")
+        bootstrap = _aws_public_brokers(cluster_arn)
+
     return Target(
         name="msk",
-        bootstrap=_terraform_output(chdir, "bootstrap_brokers_public"),
+        bootstrap=bootstrap,
         sasl_username=_terraform_output(chdir, "sasl_username"),
         sasl_password=_terraform_output(chdir, "sasl_password"),
     )

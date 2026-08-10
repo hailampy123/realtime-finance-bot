@@ -25,9 +25,13 @@ compose-down:
 test-integration: compose-up
 	RUN_INTEGRATION=1 uv run pytest tests/integration -v
 
-.PHONY: stream-local notebook notebook-test notebook-clean
+.PHONY: stream-local notebook notebook-local notebook-msk notebook-test notebook-clean
 
 LOCAL_BOOTSTRAP ?= 127.0.0.1:9092
+TARGET ?= local
+FDAI_AWS_PROFILE ?= $(if $(strip $(AWS_PROFILE)),$(AWS_PROFILE),fdai-sandbox)
+CLEAN_AWS_ENV := env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
+	-u AWS_SESSION_TOKEN -u AWS_SECURITY_TOKEN
 
 # The local path to actually having data to look at. `compose-up` alone gives
 # an empty broker: auto-create is off, so the topics must be made first, and
@@ -39,9 +43,18 @@ stream-local: compose-up
 	uv run python -m scripts.create_topics --bootstrap $(LOCAL_BOOTSTRAP) --replication-factor 1
 	INGEST_BOOTSTRAP_SERVERS=$(LOCAL_BOOTSTRAP) uv run python -m ingest.cli
 
-notebook:
+notebook: notebook-$(TARGET)
+
+notebook-local:
 	uv sync --group notebook
-	uv run --group notebook jupyter lab notebooks/
+	FDAI_TARGET=local uv run --group notebook jupyter lab notebooks/
+
+notebook-msk:
+	uv sync --group notebook
+	$(CLEAN_AWS_ENV) AWS_PROFILE=$(FDAI_AWS_PROFILE) \
+		uv run python -m scripts.prepare_msk_notebook --profile $(FDAI_AWS_PROFILE)
+	$(CLEAN_AWS_ENV) AWS_PROFILE=$(FDAI_AWS_PROFILE) FDAI_TARGET=terraform \
+		uv run --group notebook jupyter lab notebooks/
 
 # devlab's pandas-dependent tests skip under plain `make test`, which runs
 # without the notebook group. This runs the whole suite with it installed.

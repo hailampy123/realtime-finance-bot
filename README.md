@@ -31,7 +31,8 @@ it isn't.
 - AWS credentials for the sandbox account (`AWS_PROFILE` or env vars)
 - `terraform` >= 1.9, `uv`, `docker`, `databricks` CLI authenticated to the workspace
 - `cp infra/envs/dev/terraform.tfvars.example infra/envs/dev/terraform.tfvars` and fill in
-  `repo_url` and `kafka_client_cidrs` (the Databricks workspace NAT EIP plus your own IP, each `/32`)
+  `repo_url` and `kafka_client_cidrs` (the Databricks workspace NAT EIP; your
+  laptop IP is detected automatically)
 
 ## Local development
 
@@ -93,7 +94,15 @@ opt-in dependency group, so they never reach `make check` or the producer image.
 
 ```bash
 make stream-local   # in one terminal
-make notebook       # in another
+make notebook TARGET=local  # in another
+```
+
+For an existing MSK deployment, one command validates/refreshes SSO, updates
+the current laptop `/32` through Terraform, verifies Kafka access, and launches
+Jupyter with the live Terraform target:
+
+```bash
+make notebook TARGET=msk
 ```
 
 **Ad-hoc local consumer** — decodes the same bare Avro the producer writes and

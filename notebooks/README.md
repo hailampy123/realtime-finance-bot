@@ -17,7 +17,17 @@ Notebook dependencies live in an opt-in `notebook` group, so `uv sync`,
 `make check`, and the producer image never install jupyter or pandas:
 
 ```bash
-make notebook          # uv sync --group notebook, then jupyter lab notebooks/
+make notebook TARGET=local
+make notebook TARGET=msk
+```
+
+The MSK form is the supported entry point. It selects the AWS profile, refreshes
+an expired SSO session when possible, updates the laptop's current `/32` through
+Terraform, verifies Kafka metadata access, and passes the same environment to
+Jupyter. Override the default profile only when necessary:
+
+```bash
+make notebook TARGET=msk FDAI_AWS_PROFILE=another-profile
 ```
 
 ## Getting data to look at
@@ -41,12 +51,14 @@ with auto-create disabled — no topics, no data.
 ### MSK
 
 ```bash
-make up                # provisions the sandbox, ~20 min
-export FDAI_TARGET=msk # then fill INGEST_SASL_* in .env
+AWS_PROFILE=fdai-sandbox make up  # first deployment only, ~20 min
+make notebook TARGET=msk         # every notebook run after that
 ```
 
-Or skip `.env` entirely and read the endpoint from the stack, which cannot go
-stale — broker DNS is regenerated on every `make up`:
+The launch preflight reads the live endpoint and SCRAM credentials from the
+stack. No `.env` credentials, endpoint copy, profile export, or IP command is
+required. `devlab.from_terraform()` also falls back to the AWS API if Terraform
+temporarily cached an empty public endpoint:
 
 ```python
 target = devlab.from_terraform()
@@ -54,14 +66,14 @@ target = devlab.from_terraform()
 
 ## Switching targets
 
-Notebooks `00`–`02` open with `devlab.resolve()`, which reads `$FDAI_TARGET`
-(`local` by default, or `msk`, or `terraform`). Notebook `03` is deliberately
-pinned to MSK. The research notebook `04` keeps its selection explicit and
-analyzes one target per run:
+Notebooks `00`–`02` and `04` inherit the target chosen by the launch command.
+`make notebook TARGET=local` passes `FDAI_TARGET=local`; the MSK form passes
+`FDAI_TARGET=terraform` so the live stack outputs are used. Notebook `03` is
+deliberately pinned to MSK. The research notebook still analyzes one target per
+run and keeps only the run-depth choice in the notebook:
 
 ```python
-TARGET = "local"       # "local" or "msk"
-RUN_MODE = "quick"     # "quick" (20k/60s) or "deep" (200k/10min)
+RUN_MODE = "quick"  # "quick" (20k/60s) or "deep" (200k/10min)
 ```
 
 `04_stream_product_research.ipynb` is strictly read-only. It uses
@@ -116,34 +128,16 @@ what arrives *after* the call) when you meant `"earliest"`.
 `make compose-up` alone does not create topics and auto-create is off;
 `make stream-local` does.
 
-**`TargetError: AWS credentials are invalid or expired`** from
-`devlab.from_terraform()` — the credentials in *this process* are stale, which
-is not necessarily true in your terminal. Sandbox session tokens commonly
-expire in hours, well before the account's 7-day wipe, and a running Jupyter
-kernel never sees a terminal's credentials refresh after the kernel started.
-Check in order:
+**`TargetError: AWS credentials are invalid or expired`** — fully stop the
+current Jupyter server and restart through `make notebook TARGET=msk`. The
+preflight removes stale raw credential variables, uses the selected profile,
+opens SSO login when it needs refreshing, and gives the new kernel the same
+clean environment. For a non-SSO profile whose keys really expired, replace
+the keys in that profile and run the same command again.
 
-1. In the terminal where `make up` last worked: `aws sts get-caller-identity`.
-   If this also fails, your credentials themselves expired — refresh them
-   there (re-export keys, or `aws sso login --profile <name>` if using SSO).
-2. If that succeeds but the notebook still fails, the kernel's environment is
-   what's stale. For SSO: run `!aws sso login --profile <name>` in a cell (see
-   `03_msk_live_experiment.ipynb`'s second cell) — no restart needed, since
-   AWS's tools re-read the SSO cache from disk on every call. For raw/temporary
-   keys: set them in a cell via `getpass` rather than typing literal values
-   into cell source, which `nbstripout` does not clean up:
-
-   ```python
-   import getpass
-   import os
-
-   os.environ["AWS_ACCESS_KEY_ID"] = getpass.getpass("AWS_ACCESS_KEY_ID: ")
-   os.environ["AWS_SECRET_ACCESS_KEY"] = getpass.getpass("AWS_SECRET_ACCESS_KEY: ")
-   os.environ["AWS_SESSION_TOKEN"] = getpass.getpass("AWS_SESSION_TOKEN (blank if none): ")
-   ```
-
-   If neither works, fully stop Jupyter (not just restart the kernel) and
-   start it again — `make notebook` — from a terminal with valid credentials.
+**`BrokerUnavailable` after changing networks** — fully stop Jupyter and run
+`make notebook TARGET=msk` again. The preflight detects the new public IP and
+updates both Terraform-managed operator rules before launching the server.
 
 ## Tests
 

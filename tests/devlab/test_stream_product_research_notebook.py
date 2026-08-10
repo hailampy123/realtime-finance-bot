@@ -5,10 +5,15 @@ from pathlib import Path
 from typing import Any
 
 NOTEBOOK = Path("notebooks/04_stream_product_research.ipynb")
+MSK_NOTEBOOK = Path("notebooks/03_msk_live_experiment.ipynb")
 
 
 def load_notebook() -> dict[str, Any]:
     return json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+
+
+def load_msk_notebook() -> dict[str, Any]:
+    return json.loads(MSK_NOTEBOOK.read_text(encoding="utf-8"))
 
 
 def code_source(notebook: dict[str, Any]) -> str:
@@ -26,17 +31,23 @@ def markdown_source(notebook: dict[str, Any]) -> str:
 def test_notebook_has_switchable_bounded_read_only_contract():
     source = code_source(load_notebook())
 
-    assert 'TARGET = "local"' in source
+    assert 'os.environ.get("FDAI_TARGET", "local")' in source
     assert 'RUN_MODE = "quick"' in source
     assert 'TOPIC = "md.trades.v1"' in source
     assert '"quick": {"limit": 20_000, "seconds": 60.0}' in source
     assert '"deep": {"limit": 200_000, "seconds": 600.0}' in source
-    assert "devlab.local()" in source
-    assert "devlab.from_terraform()" in source
+    assert "devlab.resolve(RUNTIME_TARGET)" in source
     assert 'offset_reset="earliest"' in source
 
     for forbidden in (".produce(", ".commit(", "create_topics", "to_csv(", "to_parquet("):
         assert forbidden not in source
+
+
+def test_notebooks_do_not_contain_manual_aws_login_or_profile_cells():
+    source = code_source(load_notebook()) + code_source(load_msk_notebook())
+
+    assert "aws sso login" not in source
+    assert "AWS_PROFILE" not in source
 
 
 def test_every_code_cell_is_plain_compilable_python():

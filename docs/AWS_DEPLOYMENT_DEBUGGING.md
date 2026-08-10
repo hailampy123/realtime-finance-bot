@@ -25,9 +25,23 @@ Companion documentation:
   and security model.
 - [`SETUP.md`](SETUP.md) covers credentials, installation, and prerequisites.
 
-Run all commands from the repository root. The AWS commands in this guide are
-read-only. `make smoke` creates a short-lived Kafka consumer group, but it does
-not change AWS infrastructure or topic data.
+Run all commands from the repository root. The manual AWS inspection commands
+in this guide are read-only. `make smoke` creates a short-lived Kafka consumer
+group but does not change AWS infrastructure or topic data. The automated MSK
+notebook preflight below may reconcile the two Terraform-managed operator
+security-group rules when the laptop IP changed.
+
+For the two recurring notebook failures—expired profile credentials and a
+changed laptop public IP—use the automated entry point instead of the manual
+sections below:
+
+```bash
+make notebook TARGET=msk
+```
+
+It refreshes SSO when possible, reconciles the current operator `/32` through
+Terraform, verifies Kafka metadata access, and only then starts Jupyter. The
+remaining commands are for investigation when that preflight itself fails.
 
 ---
 
