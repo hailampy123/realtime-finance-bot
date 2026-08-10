@@ -161,3 +161,35 @@ def test_a_genuinely_missing_stack_keeps_the_make_up_hint(monkeypatch):
     monkeypatch.setattr(config.subprocess, "run", lambda *a, **k: Result())
     with pytest.raises(TargetError, match="make up"):
         config.from_terraform()
+
+
+def test_a_successful_but_empty_bootstrap_output_is_not_treated_as_working(monkeypatch):
+    # AWS's GetBootstrapBrokers is fetched by the provider exactly once, at the
+    # moment public connectivity finishes, and Terraform caches whatever it got --
+    # including empty, if AWS was not ready yet (see infra/envs/dev/outputs.tf).
+    # This is a real state on an otherwise-healthy cluster (returncode 0, valid
+    # credentials, sasl_username/password resolve fine) and must not silently
+    # build a Target that fails confusingly three calls later.
+    outputs = {
+        "bootstrap_brokers_public": "",
+        "sasl_username": "fdai-producer",
+        "sasl_password": "secret",
+    }
+
+    class Result:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout: str) -> None:
+            self.stdout = stdout
+
+    def fake_run(cmd, **kwargs):
+        return Result(outputs[cmd[-1]] + "\n")
+
+    monkeypatch.setattr(config.subprocess, "run", fake_run)
+    with pytest.raises(TargetError, match="cached") as excinfo:
+        config.from_terraform()
+    # Must not read like the credentials-expired or missing-stack cases --
+    # re-running `make up` does not fix this, since bootstrap.sh never writes
+    # its own AWS-CLI-polled value back into Terraform's cached output.
+    assert "make up` will NOT fix" in str(excinfo.value)

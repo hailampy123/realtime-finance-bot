@@ -156,7 +156,24 @@ def _terraform_output(chdir: str | Path, name: str) -> str:
             f"`terraform -chdir={chdir} output -raw {name}` failed. Is the stack up? "
             f"Run `make up` first.\n{stderr}"
         )
-    return result.stdout.strip()
+    value = result.stdout.strip()
+    if not value and name == "bootstrap_brokers_public":
+        raise TargetError(
+            "`bootstrap_brokers_public` is empty in Terraform state, even though "
+            "this call succeeded -- credentials and the stack itself are fine. AWS's "
+            "GetBootstrapBrokers is fetched by the provider exactly once, at the "
+            "moment public connectivity finishes, and Terraform caches whatever it "
+            "got then, including empty if AWS was not ready yet "
+            "(see infra/envs/dev/outputs.tf). Re-running `make up` will NOT fix "
+            "this: it never writes its own AWS-CLI-polled value back into "
+            "Terraform's cached output. Get the real endpoint directly:\n"
+            f"  aws kafka get-bootstrap-brokers --cluster-arn "
+            f"$(terraform -chdir={chdir} output -raw cluster_arn) "
+            "--query 'BootstrapBrokerStringPublicSaslScram' --output text\n"
+            "Then use devlab.msk() with that value in .env, or build a Target(...) "
+            "directly."
+        )
+    return value
 
 
 def from_terraform(chdir: str | Path = DEFAULT_TERRAFORM_DIR) -> Target:

@@ -4,6 +4,7 @@ Streaming market-data and LLM trading-decision platform.
 Design: [`docs/superpowers/specs/2026-08-07-finance-data-ai-platform-design.md`](docs/superpowers/specs/2026-08-07-finance-data-ai-platform-design.md)
 Setup, prerequisites, manual AWS/Databricks steps, data sources, and config variables: [`docs/SETUP.md`](docs/SETUP.md)
 Current-state diagrams (data flow + deployed AWS topology, built vs. designed-only): [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+Post-deployment AWS verification and debugging commands: [`docs/AWS_DEPLOYMENT_DEBUGGING.md`](docs/AWS_DEPLOYMENT_DEBUGGING.md)
 
 ## The reproducibility contract
 

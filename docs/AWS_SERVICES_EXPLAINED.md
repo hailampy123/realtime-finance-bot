@@ -4,7 +4,8 @@ Every AWS service this project touches: what it is, why it's here, and the comma
 to look at it. Terse on purpose.
 
 Companions: [`MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md) (the deploy sequence) ·
-[`KAFKA_EXPLAINED.md`](KAFKA_EXPLAINED.md) (Kafka itself)
+[`AWS_DEPLOYMENT_DEBUGGING.md`](AWS_DEPLOYMENT_DEBUGGING.md) (verification and
+troubleshooting) · [`KAFKA_EXPLAINED.md`](KAFKA_EXPLAINED.md) (Kafka itself)
 
 ---
 
