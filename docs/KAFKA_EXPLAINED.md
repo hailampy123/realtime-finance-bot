@@ -4,7 +4,8 @@ Written for someone new to Kafka. Every setting shown here is one this repo
 actually uses — file and line cited — so you're learning your own system rather
 than a tutorial's.
 
-Companion: [`MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md) covers the AWS side.
+Companions: [`MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md) (the deploy sequence) ·
+[`AWS_SERVICES_EXPLAINED.md`](AWS_SERVICES_EXPLAINED.md) (the AWS services)
 
 ---
 

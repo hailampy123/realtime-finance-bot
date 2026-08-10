@@ -13,9 +13,12 @@ For the target end-state these diagrams intentionally do **not** show, see
 (lakehouse). For install/config steps, see [`docs/SETUP.md`](SETUP.md). For a
 resource-by-resource explanation of what `make up` creates and why — written for
 someone new to Terraform and AWS — see
-[`docs/MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md), and for Kafka concepts
-grounded in this repo's own config,
-[`docs/KAFKA_EXPLAINED.md`](KAFKA_EXPLAINED.md).
+[`docs/MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md). Two more written for the same
+audience: [`docs/AWS_SERVICES_EXPLAINED.md`](AWS_SERVICES_EXPLAINED.md) (what each
+AWS service is, with inspection commands) and
+[`docs/KAFKA_EXPLAINED.md`](KAFKA_EXPLAINED.md) (Kafka, grounded in this repo's
+own config), and [`docs/CODEBASE_EXPLAINED.md`](CODEBASE_EXPLAINED.md)
+(directory-by-directory tour, module boundaries, where to make a change).
 
 ## 1. Data flow — what's actually moving today
 

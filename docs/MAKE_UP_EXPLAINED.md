@@ -6,6 +6,8 @@ and **how to tell it worked**.
 
 Companion docs, so this one doesn't repeat them:
 
+- [`CODEBASE_EXPLAINED.md`](CODEBASE_EXPLAINED.md) — repo tour, module boundaries, where to make a change
+- [`AWS_SERVICES_EXPLAINED.md`](AWS_SERVICES_EXPLAINED.md) — what each AWS service *is*, plus inspection commands
 - [`KAFKA_EXPLAINED.md`](KAFKA_EXPLAINED.md) — Kafka itself, for the same audience
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) §2 — the physical topology diagram
 - [`SETUP.md`](SETUP.md) §5f — the full reasoning behind the MSK/ACL ordering
