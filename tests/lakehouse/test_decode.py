@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("pyspark", reason="needs `uv sync --group lakehouse`")
+
 import datetime as dt
 
 from lakehouse.trades.transforms import decode_kafka_trades

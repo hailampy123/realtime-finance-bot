@@ -5,7 +5,7 @@ lint:
 	uv run ruff format --check .
 
 typecheck:
-	uv run mypy ingest devlab
+	uv run --group lakehouse mypy ingest devlab lakehouse
 
 test:
 	uv run pytest -v

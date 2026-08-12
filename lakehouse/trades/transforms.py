@@ -75,12 +75,10 @@ QUARANTINE_PREDICATES: dict[str, str] = {
         f"AND event_ts_us <= unix_micros(current_timestamp()) + {ONE_DAY_US}"
     ),
     "bad_price": (
-        f"try_cast(price AS {DECIMAL_TYPE}) IS NOT NULL "
-        f"AND try_cast(price AS {DECIMAL_TYPE}) > 0"
+        f"try_cast(price AS {DECIMAL_TYPE}) IS NOT NULL AND try_cast(price AS {DECIMAL_TYPE}) > 0"
     ),
     "bad_size": (
-        f"try_cast(size AS {DECIMAL_TYPE}) IS NOT NULL "
-        f"AND try_cast(size AS {DECIMAL_TYPE}) > 0"
+        f"try_cast(size AS {DECIMAL_TYPE}) IS NOT NULL AND try_cast(size AS {DECIMAL_TYPE}) > 0"
     ),
     "bad_side": "side IS NOT NULL AND side IN ('BUY', 'SELL', 'UNKNOWN')",
 }
@@ -92,14 +90,12 @@ def classify_trades(df: DataFrame) -> DataFrame:
     Chained `when` clauses give first-match-wins, and the deliberate absence of
     an `otherwise` is what makes a valid row's reason NULL.
     """
-    reason = None
-    for name, valid_when in QUARANTINE_PREDICATES.items():
-        condition = ~F.expr(valid_when)
-        reason = (
-            F.when(condition, F.lit(name))
-            if reason is None
-            else reason.when(condition, F.lit(name))
-        )
+    # Seeded from the first predicate rather than from None so the chain is a
+    # Column throughout -- there is no "no predicates" state to reason about.
+    (first_name, first_predicate), *rest = QUARANTINE_PREDICATES.items()
+    reason = F.when(~F.expr(first_predicate), F.lit(first_name))
+    for name, valid_when in rest:
+        reason = reason.when(~F.expr(valid_when), F.lit(name))
     return df.withColumn(QUARANTINE_REASON, reason)
 
 

@@ -4,6 +4,8 @@ import datetime as dt
 
 import pytest
 
+pytest.importorskip("pyspark", reason="needs `uv sync --group lakehouse`")
+
 from lakehouse.trades.schema import QUARANTINE_REASON
 from lakehouse.trades.transforms import classify_trades, decode_kafka_trades
 
