@@ -122,6 +122,36 @@ databricks pipelines list-pipeline-events <pipeline-id> --profile tw
 When an update fails, the useful text is at `error.exceptions[0].message` — the
 top-level `message` only ever says "Update X is FAILED".
 
+## 5a. Known blocker — the pipeline cannot import `lakehouse` yet
+
+A live update on 2026-08-12 got a cluster up, ran Python, and failed with:
+
+```
+ModuleNotFoundError: No module named 'lakehouse'
+  at lakehouse/pipelines/trades.py, line 17
+```
+
+The files are all synced correctly — this is purely that a `libraries.file`
+pipeline source does not put the bundle root on `sys.path`. Everything else is
+confirmed working: cluster launch, `ADVANCED` edition, catalog, schema, secret
+scope, and bundle sync.
+
+Two more findings from those runs, already applied:
+
+- The driver needs **at least 4 CPU cores**. `m5d.large` (2 cores) fails with
+  "Spark driver failed to start within the startup timeout"; the config now uses
+  `m5d.xlarge`.
+- A classic cluster cold-starts in **10–20 minutes** here, and a failed update
+  can leave the cluster `RUNNING` while the pipeline reads `IDLE`. Check and
+  terminate it, or it bills until autotermination:
+  ```bash
+  databricks clusters list --profile tw | grep dlt-execution
+  databricks clusters delete <cluster-id> --profile tw
+  ```
+
+Candidate fixes are listed in §11.2 of the design doc. Try them in order; each
+costs a ~20-minute cluster start to verify.
+
 ## 6. What still blocks a live run
 
 Separate infrastructure work, in this order. Until it is done, the pipeline

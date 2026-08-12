@@ -38,7 +38,19 @@ def test_compute_is_classic_not_serverless():
     # IP allowlist, so classic is a networking requirement, not a preference.
     settings = _pipeline()
     assert settings["serverless"] is False
-    assert settings["clusters"][0]["node_type_id"] == "m5d.large"
+    assert settings["clusters"][0]["node_type_id"] == "m5d.xlarge"
+
+
+def test_driver_has_at_least_four_cores():
+    # An observed failure, not a theoretical one: m5d.large (2 cores) died with
+    # "Spark driver failed to start within the startup timeout. This commonly
+    # occurs on instances with fewer than 4 CPU cores." The `.large` sizes in
+    # every AWS family are 2-core, so downsizing to one for cost reasons breaks
+    # the pipeline rather than saving money.
+    node = _pipeline()["clusters"][0]["node_type_id"]
+    assert not node.endswith(".large"), (
+        f"{node} is a 2-core instance; the DLT driver needs at least 4 cores"
+    )
 
 
 def test_pipeline_is_triggered_not_continuous():

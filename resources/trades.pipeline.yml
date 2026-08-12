@@ -15,7 +15,11 @@ resources:
       serverless: false
       clusters:
         - label: default
-          node_type_id: m5d.large
+          # 4 cores minimum, learned the hard way. m5d.large (2 cores) failed
+          # with "Spark driver failed to start within the startup timeout. This
+          # commonly occurs on instances with fewer than 4 CPU cores." The
+          # cheapest thing that works beats the cheapest thing.
+          node_type_id: m5d.xlarge
           num_workers: 1
 
       # Triggered, not continuous: nothing downstream consumes Silver until

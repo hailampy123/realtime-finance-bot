@@ -274,7 +274,7 @@ venue wire formats and `core/` knows resilience, and neither knows the other.
 | Workspace | `itoc-training-data-ai`, CLI profile `tw` |
 | Catalog / schema | `fdai` / `market` |
 | Edition | `ADVANCED` (§2.2) |
-| Compute | `serverless: false` + classic cluster, `m5d.large`, 1 worker (parent §11.1) |
+| Compute | `serverless: false` + classic cluster, `m5d.xlarge`, 1 worker (parent §11.1) |
 | `continuous` | `false` — triggered, per parent §10 |
 | `channel` | `CURRENT` |
 
@@ -335,9 +335,9 @@ Following the parent spec's §2 and §11 pattern, each assumption carries a name
 |---|---|---|---|
 | B1 | Unity Catalog enabled | **Verified** — managed catalogs present in metastore `ap-southeast-2` | — |
 | B2 | The `fdai` catalog can be created | **Verified** — `fdai` and `fdai.market` created and owned by `lam.nguyen@thoughtworks.com`, despite the metastore `CREATE_CATALOG` grant list naming only `tw_training` / `tw_admin` / other individuals; workspace-admin membership sufficed | — (was: schema `fdai_market` inside the `development` catalog) |
-| B3 | A pipeline can import a sibling module and read `trade.v1.avsc` from the bundle-synced path | **Unverified** | Inject the schema JSON through pipeline `configuration`, with a CI test asserting it matches `ingest/schemas/trade.v1.avsc` byte-for-byte |
+| B3 | A pipeline can import a sibling module and read `trade.v1.avsc` from the bundle-synced path | **DISPROVED** — a live update reached `INITIALIZING` and failed with `ModuleNotFoundError: No module named 'lakehouse'` at `lakehouse/pipelines/trades.py` line 17. Both the `.avsc` and `lakehouse/trades/*.py` *were* synced to the workspace, so the files exist; the bundle root is simply not on `sys.path` when a `libraries.file` pipeline source is loaded | §11.2 — three candidate fixes, none yet verified |
 | B4 | `ADVANCED` edition is available in this workspace | **Verified** — a `dry_run` pipeline create returned `edition: ADVANCED`, `serverless: false`, `catalog: fdai`, `schema: market` with no error and `pipeline_id: null` | — (was: hand-written `MERGE` in a wheel, parent §11 A5's fallback) |
-| B5 | Classic compute can be created and reaches MSK | **Partially verified** — `allow-cluster-create` entitlement present, `m5d.large` available in `ap-southeast-2`; reachability still blocked because `kafka_client_cidrs = []` | §11.1 |
+| B5 | Classic compute can be created and reaches MSK | **Cluster launch verified, with a correction** — `allow-cluster-create` present; a 2-core `m5d.large` failed with *"Spark driver failed to start within the startup timeout… commonly occurs on instances with fewer than 4 CPU cores"*, so the driver needs ≥ 4 cores (`m5d.xlarge`). Reachability still blocked because `kafka_client_cidrs = []` | §11.1 |
 
 ### 11.1 Blocking infrastructure work
 
@@ -356,6 +356,40 @@ Stage 2a's offline deliverables need none of this; the first live run needs all 
 3. **Add that `/32` to `kafka_client_cidrs`** and re-run `make up`.
 
 Only after all three can `bronze_trades_stream` read a single record.
+
+### 11.2 The open blocker — `ModuleNotFoundError: No module named 'lakehouse'`
+
+This one is *not* infrastructure and blocks the pipeline independently of MSK. Two live
+updates established exactly where the boundary is:
+
+| Attempt | Node type | Reached | Outcome |
+|---|---|---|---|
+| 1 | `m5d.large` (2 cores) | `WAITING_FOR_RESOURCES` | Driver never started — needs ≥ 4 cores |
+| 2 | `m5d.xlarge` (4 cores) | `INITIALIZING` | Cluster fine; Python ran and failed at the import on line 17 |
+
+So the cluster, edition, catalog, schema, bundle sync, and secret scope are all good, and
+the *only* thing standing between this design and a running pipeline is how the shell
+reaches its own transforms. Everything under `lakehouse/` is present in the workspace —
+the deploy was verified — but a `libraries.file` pipeline source does not put the bundle
+root on `sys.path`.
+
+Three candidate fixes, none yet verified, cheapest first. Each costs ~20 minutes to test
+because a classic cluster cold-starts from scratch every time.
+
+1. **Prepend the bundle root to `sys.path` in the shell**, before the `lakehouse` imports:
+   `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))`. The failing traceback
+   printed a real path for `trades.py`, which suggests `__file__` is populated. Smallest
+   change; keeps one source of truth for the `.avsc`. Risk: the shell is loaded as a
+   *cell*, so `__file__` semantics are not guaranteed.
+2. **Widen the library to a glob** — `glob.include: ../lakehouse/**`. Makes every module a
+   pipeline source, which may change evaluation order and would load `schema.py` and
+   `transforms.py` as pipeline files rather than libraries.
+3. **Build a wheel and attach it as a cluster library.** The canonical answer, rejected for
+   2a only to avoid a build step per iteration (§12). Stage 3a needs a wheel anyway for the
+   backfill job, so this may simply be pulling that decision forward.
+
+None of this affects the 46 offline tests, which exercise the full decode → classify →
+Silver path without Databricks.
 
 ## 12. Rejected alternatives
 
