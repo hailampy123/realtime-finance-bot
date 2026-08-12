@@ -11,7 +11,13 @@ from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.avro.functions import from_avro
 
-from lakehouse.trades.schema import trade_avsc_json
+from lakehouse.trades.schema import (
+    DECIMAL_TYPE,
+    EPOCH_FLOOR_US,
+    ONE_DAY_US,
+    QUARANTINE_REASON,
+    trade_avsc_json,
+)
 
 # The producer writes a bare Avro datum via fastavro.schemaless_writer, with no
 # Confluent magic-byte prefix and no schema registry, which is exactly what
@@ -40,3 +46,58 @@ def decode_kafka_trades(df: DataFrame) -> DataFrame:
         F.col("timestamp").alias("_kafka_timestamp"),
         F.current_timestamp().alias("_ingested_at"),
     )
+
+
+# Each entry maps a reason name to the SQL predicate that must hold for a row to
+# be VALID. Order matters: the first failing predicate names the reason, so the
+# most fundamental problem is reported rather than a downstream symptom.
+#
+# Every predicate is NULL-safe by construction. SQL is three-valued, so a naive
+# `try_cast(price AS DECIMAL) > 0` yields NULL (not FALSE) for an unparseable
+# price, and `NOT NULL` is NULL, which would silently fail to match and let a
+# junk price through as valid. Each numeric check therefore asserts IS NOT NULL
+# before comparing.
+#
+# The pipeline shell reuses these as warn-only expectations, which keeps the
+# quality metrics behind the quarantine-rate SLI meaningful while the actual
+# routing is done by the reason column.
+QUARANTINE_PREDICATES: dict[str, str] = {
+    # All three are NULL together only when PERMISSIVE from_avro failed to
+    # decode. `IS NOT NULL` returns FALSE rather than NULL, so this is safe.
+    "decode_failed": "venue IS NOT NULL OR trade_id IS NOT NULL OR event_ts_us IS NOT NULL",
+    # AUTO CDC keys cannot be NULL, so this is a pipeline error, not a warning.
+    "missing_key": (
+        "venue IS NOT NULL AND venue <> '' AND trade_id IS NOT NULL AND trade_id <> ''"
+    ),
+    "missing_instrument": "instrument_id IS NOT NULL AND instrument_id <> ''",
+    "bad_timestamp": (
+        f"event_ts_us IS NOT NULL AND event_ts_us >= {EPOCH_FLOOR_US} "
+        f"AND event_ts_us <= unix_micros(current_timestamp()) + {ONE_DAY_US}"
+    ),
+    "bad_price": (
+        f"try_cast(price AS {DECIMAL_TYPE}) IS NOT NULL "
+        f"AND try_cast(price AS {DECIMAL_TYPE}) > 0"
+    ),
+    "bad_size": (
+        f"try_cast(size AS {DECIMAL_TYPE}) IS NOT NULL "
+        f"AND try_cast(size AS {DECIMAL_TYPE}) > 0"
+    ),
+    "bad_side": "side IS NOT NULL AND side IN ('BUY', 'SELL', 'UNKNOWN')",
+}
+
+
+def classify_trades(df: DataFrame) -> DataFrame:
+    """Add a nullable `_quarantine_reason`; NULL means the row is valid.
+
+    Chained `when` clauses give first-match-wins, and the deliberate absence of
+    an `otherwise` is what makes a valid row's reason NULL.
+    """
+    reason = None
+    for name, valid_when in QUARANTINE_PREDICATES.items():
+        condition = ~F.expr(valid_when)
+        reason = (
+            F.when(condition, F.lit(name))
+            if reason is None
+            else reason.when(condition, F.lit(name))
+        )
+    return df.withColumn(QUARANTINE_REASON, reason)
