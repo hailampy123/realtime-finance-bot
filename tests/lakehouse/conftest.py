@@ -33,6 +33,11 @@ def spark():
         .appName("lakehouse-tests")
         .config("spark.ui.enabled", "false")
         .config("spark.sql.shuffle.partitions", "1")
+        # Pin the driver to loopback. Left to itself Spark binds the machine's
+        # LAN address, which fails the moment the laptop changes network -- and
+        # showed up here as an intermittent "Error initializing SparkContext".
+        .config("spark.driver.host", "127.0.0.1")
+        .config("spark.driver.bindAddress", "127.0.0.1")
         .config("spark.jars.packages", f"org.apache.spark:spark-avro_2.12:{pyspark.__version__}")
         .getOrCreate()
     )
