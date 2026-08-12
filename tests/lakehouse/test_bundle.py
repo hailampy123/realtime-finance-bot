@@ -19,9 +19,7 @@ def _load(path: str) -> dict:
 
 
 def _pipeline() -> dict:
-    return _load("resources/trades.pipeline.yml")["resources"]["pipelines"][
-        "trades_bronze_silver"
-    ]
+    return _load("resources/trades.pipeline.yml")["resources"]["pipelines"]["trades_bronze_silver"]
 
 
 def test_targets_the_verified_catalog_and_schema():
