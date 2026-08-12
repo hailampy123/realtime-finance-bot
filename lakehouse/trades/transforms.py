@@ -101,3 +101,36 @@ def classify_trades(df: DataFrame) -> DataFrame:
             else reason.when(condition, F.lit(name))
         )
     return df.withColumn(QUARANTINE_REASON, reason)
+
+
+def valid_trades(df: DataFrame) -> DataFrame:
+    """The clean branch: typed, projected to the Silver contract, nothing extra.
+
+    Kafka audit columns are dropped here rather than only by the CDC flow's
+    except_column_list, so the projection is testable without Databricks. The
+    flow still declares the exclusions, which is belt and braces.
+    """
+    return df.where(F.col(QUARANTINE_REASON).isNull()).select(
+        "venue",
+        "venue_symbol",
+        "instrument_id",
+        "trade_id",
+        "event_ts_us",
+        F.timestamp_micros(F.col("event_ts_us")).alias("event_ts"),
+        "ingest_ts_us",
+        F.col("price").cast(DECIMAL_TYPE).alias("price"),
+        F.col("size").cast(DECIMAL_TYPE).alias("size"),
+        "side",
+        "source",
+        "sequence",
+        "is_backfill",
+    )
+
+
+def quarantined_trades(df: DataFrame) -> DataFrame:
+    """The rejected branch: everything, plus why it was rejected.
+
+    Deliberately keeps `_kafka_value` -- a quarantined record that cannot be
+    re-read is a lost record with a receipt.
+    """
+    return df.where(F.col(QUARANTINE_REASON).isNotNull())

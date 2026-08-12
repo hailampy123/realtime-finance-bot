@@ -38,6 +38,13 @@ def spark():
         # showed up here as an intermittent "Error initializing SparkContext".
         .config("spark.driver.host", "127.0.0.1")
         .config("spark.driver.bindAddress", "127.0.0.1")
+        # Pin UTC. spark.sql.session.timeZone defaults to the JVM's zone, so
+        # timestamp_micros would render event_ts in whatever zone the developer
+        # happens to sit in -- shifting a financial time series by hours
+        # depending on where the code ran. Databricks defaults to UTC; matching
+        # it here is what makes the local suite representative. The pipeline
+        # sets the same value explicitly rather than trusting the default.
+        .config("spark.sql.session.timeZone", "UTC")
         .config("spark.jars.packages", f"org.apache.spark:spark-avro_2.12:{pyspark.__version__}")
         .getOrCreate()
     )
