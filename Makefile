@@ -12,6 +12,17 @@ test:
 
 check: lint typecheck test
 
+.PHONY: lakehouse-test
+
+# pyspark needs a JDK, and openjdk@17 is installed via brew but not linked, so
+# `java` is not on PATH. Setting JAVA_HOME here keeps that detail out of every
+# developer's shell profile. spark-avro is fetched from Maven on first run and
+# cached in ~/.ivy2 afterwards.
+JAVA_HOME_17 ?= /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
+
+lakehouse-test:
+	JAVA_HOME=$(JAVA_HOME_17) uv run --group lakehouse pytest tests/lakehouse -v
+
 .PHONY: compose-up compose-down test-integration
 
 compose-up:
