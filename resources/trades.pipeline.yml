@@ -1,0 +1,37 @@
+resources:
+  pipelines:
+    trades_bronze_silver:
+      name: fdai_trades_bronze_silver
+      catalog: fdai
+      schema: market
+
+      # ADVANCED, not PRO: AUTO CDC and SCD Type 1 are ADVANCED-only features.
+      edition: ADVANCED
+
+      # Classic compute is mandatory, not a preference. MSK is reachable only
+      # from the CIDRs in kafka_client_cidrs, and classic egresses through the
+      # workspace VPC NAT Gateway's Elastic IP -- one stable /32. Serverless
+      # egresses from Databricks-managed ranges that rotate monthly.
+      serverless: false
+      clusters:
+        - label: default
+          node_type_id: m5d.large
+          num_workers: 1
+
+      # Triggered, not continuous: nothing downstream consumes Silver until
+      # stage 2b, so an always-on cluster would burn money to feed nobody.
+      continuous: false
+      channel: CURRENT
+
+      configuration:
+        # Every event_ts is derived from microseconds, so a session zone other
+        # than UTC would shift the whole series. The shell sets this too.
+        spark.sql.session.timeZone: UTC
+        fdai.secret_scope: fdai
+        fdai.kafka_topic: md.trades.v1
+        fdai.starting_offsets: earliest
+        fdai.max_offsets_per_trigger: "1000000"
+
+      libraries:
+        - file:
+            path: ../lakehouse/pipelines/trades.py

@@ -1,0 +1,30 @@
+# Declarative Automation Bundle for the finance-data-ai lakehouse.
+#
+# The whole repo is synced, not just lakehouse/, because
+# lakehouse/trades/schema.py reads ingest/schemas/trade.v1.avsc at runtime --
+# the same file the producer encodes with. Duplicating the schema instead would
+# reintroduce exactly the drift ingest/core/codec.py was written to make
+# impossible.
+bundle:
+  name: finance-data-ai
+
+include:
+  - resources/*.yml
+
+# Keep notebooks, infra state, and the graph cache out of the workspace: they
+# are large, irrelevant to the pipeline, and notebooks/ holds local experiment
+# output that has no business being deployed.
+sync:
+  exclude:
+    - notebooks/**
+    - graphify-out/**
+    - infra/**
+    - docker/**
+    - .venv/**
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://itoc-training-data-ai.cloud.databricks.com
