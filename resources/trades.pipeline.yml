@@ -1,6 +1,7 @@
 resources:
   pipelines:
     trades_bronze_silver:
+      root_path: ${workspace.file_path}
       name: fdai_trades_bronze_silver
       catalog: fdai
       schema: market
