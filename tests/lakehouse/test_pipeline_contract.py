@@ -58,15 +58,17 @@ def test_silver_enables_change_data_feed():
     assert props["delta.enableChangeDataFeed"] == "true"
 
 
-def test_cdc_flow_excludes_bronze_audit_columns():
-    # Asserted as a reference to the shared constant, not as a copied list.
-    # A literal here could drift from schema.BRONZE_AUDIT_COLUMNS while both
-    # still looked correct in isolation; referencing it makes them agree by
-    # construction.
+def test_cdc_flow_has_no_except_column_list():
+    # Regression test for a live failure on 2026-08-13. trades_clean (the
+    # flow's source) is built by transforms.valid_trades, which already
+    # projects away every Kafka audit column before this flow ever runs.
+    # except_column_list must resolve its names against the source schema, and
+    # none of them exist there any more, so declaring it failed the flow with
+    # UNRESOLVED_COLUMN before a single record was processed. The exclusion is
+    # enforced entirely by the projection -- see
+    # tests/lakehouse/test_silver.py::test_silver_drops_kafka_metadata.
     call = _call("create_auto_cdc_flow")
-    node = next(kw.value for kw in call.keywords if kw.arg == "except_column_list")
-    assert isinstance(node, ast.Name), "except_column_list must reference the shared constant"
-    assert node.id == "BRONZE_AUDIT_COLUMNS"
+    assert not any(kw.arg == "except_column_list" for kw in call.keywords)
 
 
 def test_shell_holds_no_business_logic():

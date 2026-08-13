@@ -357,39 +357,48 @@ Stage 2a's offline deliverables need none of this; the first live run needs all 
 
 Only after all three can `bronze_trades_stream` read a single record.
 
-### 11.2 The open blocker — `ModuleNotFoundError: No module named 'lakehouse'`
+### 11.2 Resolved — `ModuleNotFoundError: No module named 'lakehouse'`
 
-This one is *not* infrastructure and blocks the pipeline independently of MSK. Two live
-updates established exactly where the boundary is:
+Four live updates, each narrowing the failure by one layer:
 
 | Attempt | Node type | Reached | Outcome |
 |---|---|---|---|
 | 1 | `m5d.large` (2 cores) | `WAITING_FOR_RESOURCES` | Driver never started — needs ≥ 4 cores |
-| 2 | `m5d.xlarge` (4 cores) | `INITIALIZING` | Cluster fine; Python ran and failed at the import on line 17 |
+| 2 | `m5d.xlarge` (4 cores) | `INITIALIZING` | Cluster fine; failed importing `lakehouse` at line 17 |
+| 3 | `m5d.xlarge` + `root_path: ${workspace.file_path}` | `INITIALIZING` | Import fixed; failed resolving `cdc_trades_stream` |
+| 4 | + `except_column_list` removed | `RUNNING` | Dataflow graph loaded; `bronze_trades_stream` reached Kafka |
 
-So the cluster, edition, catalog, schema, bundle sync, and secret scope are all good, and
-the *only* thing standing between this design and a running pipeline is how the shell
-reaches its own transforms. Everything under `lakehouse/` is present in the workspace —
-the deploy was verified — but a `libraries.file` pipeline source does not put the bundle
-root on `sys.path`.
+**Fix for the import (attempt 3):** setting `root_path: ${workspace.file_path}` on the
+pipeline resource puts the bundle root on `sys.path`, which was candidate 1 of the three
+listed below attempt 2's row — confirmed live rather than guessed.
 
-Three candidate fixes, none yet verified, cheapest first. Each costs ~20 minutes to test
-because a classic cluster cold-starts from scratch every time.
+**A second, unrelated bug surfaced at attempt 3.** `create_auto_cdc_flow(..., source=
+"trades_clean", except_column_list=BRONZE_AUDIT_COLUMNS)` failed:
 
-1. **Prepend the bundle root to `sys.path` in the shell**, before the `lakehouse` imports:
-   `sys.path.insert(0, str(Path(__file__).resolve().parents[2]))`. The failing traceback
-   printed a real path for `trades.py`, which suggests `__file__` is populated. Smallest
-   change; keeps one source of truth for the `.avsc`. Risk: the shell is loaded as a
-   *cell*, so `__file__` semantics are not guaranteed.
-2. **Widen the library to a glob** — `glob.include: ../lakehouse/**`. Makes every module a
-   pipeline source, which may change evaluation order and would load `schema.py` and
-   `transforms.py` as pipeline files rather than libraries.
-3. **Build a wheel and attach it as a cluster library.** The canonical answer, rejected for
-   2a only to avoid a build step per iteration (§12). Stage 3a needs a wheel anyway for the
-   backfill job, so this may simply be pulling that decision forward.
+```
+UNRESOLVED_COLUMN.WITH_SUGGESTION: A column, variable, or function parameter with name
+`_kafka_value` cannot be resolved. Did you mean one of the following?
+[venue, event_ts, event_ts_us, is_backfill, trade_id].
+```
 
-None of this affects the 46 offline tests, which exercise the full decode → classify →
-Silver path without Databricks.
+`trades_clean` is built by `transforms.valid_trades`, which already projects down to
+exactly the 13 Silver contract columns — the Kafka audit columns are gone before the CDC
+flow ever runs. `except_column_list` must resolve every name it is given *against the
+source*, so asking it to exclude eight columns that do not exist there is not redundant
+with the projection, it is a resolution error. §6.1's code sample and §2.3's "excludes
+those columns via `except_column_list`" line are both superseded by this: the exclusion is
+enforced solely by `valid_trades`' explicit `select`, and the flow declares no
+`except_column_list` at all. `lakehouse/trades/transforms.py`'s docstring and
+`tests/lakehouse/test_pipeline_contract.py` were updated to match and to regression-test
+against the parameter's reappearance.
+
+**Where attempt 4 stopped is exactly §11.1's predicted boundary.** `bronze_trades_stream`
+reached `RUNNING` and then failed with `kafkashaded...TimeoutException: Timed out waiting
+for a node assignment. Call: listNodes` — the classic cluster's NAT egress IP is not in
+`kafka_client_cidrs` (still `[]`), so MSK is unreachable. This is the user's own separate
+infra work (§11.1 items 1–3), not a defect in this design or its code. Every layer above
+the network — cluster sizing, module import, CDC flow resolution, dataflow graph
+construction — is now confirmed working on the live workspace.
 
 ## 12. Rejected alternatives
 

@@ -122,35 +122,42 @@ databricks pipelines list-pipeline-events <pipeline-id> --profile tw
 When an update fails, the useful text is at `error.exceptions[0].message` — the
 top-level `message` only ever says "Update X is FAILED".
 
-## 5a. Known blocker — the pipeline cannot import `lakehouse` yet
+## 5a. Findings from getting this running the first time
 
-A live update on 2026-08-12 got a cluster up, ran Python, and failed with:
+Four live update attempts on 2026-08-12/13 worked through four distinct
+failures, each one layer deeper than the last. All are fixed in the checked-in
+code; full detail is in design doc §11.2.
 
-```
-ModuleNotFoundError: No module named 'lakehouse'
-  at lakehouse/pipelines/trades.py, line 17
-```
+1. **Driver needs ≥ 4 CPU cores.** `m5d.large` (2 cores) never started a
+   driver. Fixed: `resources/trades.pipeline.yml` now uses `m5d.xlarge`.
+2. **`ModuleNotFoundError: No module named 'lakehouse'`.** A `libraries.file`
+   pipeline source does not put the bundle root on `sys.path`. Fixed: the
+   pipeline resource sets `root_path: ${workspace.file_path}`.
+3. **`UNRESOLVED_COLUMN` on `_kafka_value` inside `cdc_trades_stream`.**
+   `except_column_list` must resolve every name against the CDC flow's source —
+   but `trades_clean` (via `transforms.valid_trades`) already projects those
+   columns away, so there was nothing left to resolve. Fixed: the flow no
+   longer declares `except_column_list`; the exclusion is enforced solely by
+   the projection.
+4. **`bronze_trades_stream` reaches `RUNNING`, then
+   `kafkashaded...TimeoutException: Timed out waiting for a node assignment`.**
+   This is §6's NAT EIP gap, not a bug — the classic cluster's egress IP is not
+   in `kafka_client_cidrs`. Confirms every layer above the network (cluster,
+   import, CDC resolution, dataflow graph) now works on the live workspace.
 
-The files are all synced correctly — this is purely that a `libraries.file`
-pipeline source does not put the bundle root on `sys.path`. Everything else is
-confirmed working: cluster launch, `ADVANCED` edition, catalog, schema, secret
-scope, and bundle sync.
+Two operational notes that keep coming up:
 
-Two more findings from those runs, already applied:
-
-- The driver needs **at least 4 CPU cores**. `m5d.large` (2 cores) fails with
-  "Spark driver failed to start within the startup timeout"; the config now uses
-  `m5d.xlarge`.
-- A classic cluster cold-starts in **10–20 minutes** here, and a failed update
-  can leave the cluster `RUNNING` while the pipeline reads `IDLE`. Check and
+- Poll the **update**, not the pipeline — `databricks pipelines get-update
+  <pipeline-id> <update-id> --profile tw`. When it fails, the useful text is
+  `error.exceptions[0].message`; the top-level `message` only ever says
+  "Update X is FAILED".
+- A classic cluster cold-starts in 10–20 minutes here, and a failed update can
+  leave the cluster `RUNNING` while the pipeline itself reads `IDLE`. Check and
   terminate it, or it bills until autotermination:
   ```bash
   databricks clusters list --profile tw | grep dlt-execution
   databricks clusters delete <cluster-id> --profile tw
   ```
-
-Candidate fixes are listed in §11.2 of the design doc. Try them in order; each
-costs a ~20-minute cluster start to verify.
 
 ## 6. What still blocks a live run
 

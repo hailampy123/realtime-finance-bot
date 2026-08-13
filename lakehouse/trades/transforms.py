@@ -102,9 +102,11 @@ def classify_trades(df: DataFrame) -> DataFrame:
 def valid_trades(df: DataFrame) -> DataFrame:
     """The clean branch: typed, projected to the Silver contract, nothing extra.
 
-    Kafka audit columns are dropped here rather than only by the CDC flow's
-    except_column_list, so the projection is testable without Databricks. The
-    flow still declares the exclusions, which is belt and braces.
+    This projection is the ONLY place Kafka audit columns are dropped. The CDC
+    flow does not also declare except_column_list -- a live run proved that is
+    not redundant but wrong: except_column_list must resolve its column names
+    against the source, and this projection has already removed them, so there
+    is nothing left to resolve and the flow fails before processing a record.
     """
     return df.where(F.col(QUARANTINE_REASON).isNull()).select(
         "venue",

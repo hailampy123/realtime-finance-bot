@@ -14,7 +14,6 @@ from __future__ import annotations
 from pyspark import pipelines as dp
 from pyspark.sql import DataFrame, SparkSession
 
-from lakehouse.trades.schema import BRONZE_AUDIT_COLUMNS
 from lakehouse.trades.transforms import (
     QUARANTINE_PREDICATES,
     classify_trades,
@@ -116,6 +115,14 @@ dp.create_streaming_table(
 # Named flow from day one so stage 3a can add `cdc_trades_archive` into the same
 # target without touching this one. SCD Type 1 is safe here because a trade is
 # immutable: the stream and archive copies tie on event_ts_us.
+#
+# No except_column_list: trades_clean (via transforms.valid_trades) already
+# projects down to exactly the Silver contract columns, so there is nothing
+# left to exclude. A live run on 2026-08-13 proved that adding it anyway is not
+# redundant but wrong -- except_column_list tries to resolve the named columns
+# against the source, and none of the Kafka audit columns exist in trades_clean
+# to resolve, which failed the flow with UNRESOLVED_COLUMN before a single
+# record was processed.
 dp.create_auto_cdc_flow(
     name="cdc_trades_stream",
     target="silver_trades",
@@ -123,5 +130,4 @@ dp.create_auto_cdc_flow(
     keys=["venue", "trade_id"],
     sequence_by="event_ts_us",
     stored_as_scd_type=1,
-    except_column_list=BRONZE_AUDIT_COLUMNS,
 )
