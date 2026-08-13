@@ -1,0 +1,42 @@
+resources:
+  pipelines:
+    trades_bronze_silver:
+      root_path: ${workspace.file_path}
+      name: fdai_trades_bronze_silver
+      catalog: fdai
+      schema: market
+
+      # ADVANCED, not PRO: AUTO CDC and SCD Type 1 are ADVANCED-only features.
+      edition: ADVANCED
+
+      # Classic compute is mandatory, not a preference. MSK is reachable only
+      # from the CIDRs in kafka_client_cidrs, and classic egresses through the
+      # workspace VPC NAT Gateway's Elastic IP -- one stable /32. Serverless
+      # egresses from Databricks-managed ranges that rotate monthly.
+      serverless: false
+      clusters:
+        - label: default
+          # 4 cores minimum, learned the hard way. m5d.large (2 cores) failed
+          # with "Spark driver failed to start within the startup timeout. This
+          # commonly occurs on instances with fewer than 4 CPU cores." The
+          # cheapest thing that works beats the cheapest thing.
+          node_type_id: m5d.xlarge
+          num_workers: 1
+
+      # Triggered, not continuous: nothing downstream consumes Silver until
+      # stage 2b, so an always-on cluster would burn money to feed nobody.
+      continuous: false
+      channel: CURRENT
+
+      configuration:
+        # Every event_ts is derived from microseconds, so a session zone other
+        # than UTC would shift the whole series. The shell sets this too.
+        spark.sql.session.timeZone: UTC
+        fdai.secret_scope: fdai
+        fdai.kafka_topic: md.trades.v1
+        fdai.starting_offsets: earliest
+        fdai.max_offsets_per_trigger: "1000000"
+
+      libraries:
+        - file:
+            path: ../lakehouse/pipelines/trades.py

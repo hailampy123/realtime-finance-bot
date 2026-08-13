@@ -30,6 +30,13 @@ notebook = [
     "matplotlib>=3.9",
     "nbstripout>=0.7",
 ]
+# Not a default group: pyspark is ~300MB and only the lakehouse tests need it.
+# The pipeline itself runs on Databricks Runtime, which supplies its own Spark,
+# so this pin only has to agree with DBR closely enough for SQL semantics.
+# Opt in with `uv sync --group lakehouse` or `make lakehouse-test`.
+lakehouse = [
+    "pyspark==3.5.3",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -39,7 +46,7 @@ build-backend = "setuptools.build_meta"
 # devlab is dev-loop tooling, not runtime. It is listed so `import devlab`
 # resolves from any working directory (Jupyter sets cwd to the notebook's own
 # folder); docker/Dockerfile never COPYs it, so it stays out of the image.
-include = ["ingest*", "backfill*", "devlab*"]
+include = ["ingest*", "backfill*", "devlab*", "lakehouse*"]
 
 [tool.ruff]
 line-length = 100
@@ -56,6 +63,16 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 python_version = "3.12"
 strict = true
 ignore_missing_imports = true
+
+# The pipeline shells import `pyspark.pipelines` and use the `dbutils` global,
+# both of which exist only on Databricks Runtime. mypy cannot see either, so
+# checking these files locally reports errors about a runtime that is not here.
+# The exemption is safe precisely because the shells hold no logic — everything
+# worth checking lives in lakehouse.trades.*, which stays strictly checked, and
+# tests/lakehouse/test_pipeline_contract.py asserts the shells stay logic-free.
+[[tool.mypy.overrides]]
+module = ["lakehouse.pipelines.*"]
+ignore_errors = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

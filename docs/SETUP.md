@@ -16,7 +16,8 @@ for infrastructure that doesn't exist yet:
 |---|---|---|
 | Stage 0 — foundation (models, codec, gap detection, queue policy) | **Implemented** | `ingest/core/` |
 | Stage 1 — streaming ingestion (Binance/Coinbase connectors, Kafka producer, AWS infra, local dev stack) | **Implemented** | `ingest/`, `infra/`, `docker/`, `scripts/` |
-| Stage 2/3 — Databricks lakehouse (Bronze/Silver/Gold, DLT pipelines, backfill, semantic layer) | **Designed, not implemented** | spec only — no `lakehouse/` code exists yet, no implementation plan decomposed |
+| Stage 2a — Bronze + Silver pipeline (Kafka → Bronze → Silver AUTO CDC, quarantine) | **Implemented, not yet run live** | `lakehouse/`, `resources/`, `databricks.yml` — deployed to `fdai.market`; a live run is blocked on the Databricks NAT EIP allowlist ([`docs/RUNBOOK_STAGE_2A.md`](RUNBOOK_STAGE_2A.md) §6) |
+| Stage 2b/3 — Gold bars, backfill, semantic layer, vector index | **Designed, not implemented** | spec only — see §12 of the data-layer design for the remaining five plans |
 | Stage 4+ — LLM trading-decision agent, serving, dashboards | **Sketched in the parent spec only** | no design doc, no code |
 
 Everything in this document about AWS is for something that exists and that

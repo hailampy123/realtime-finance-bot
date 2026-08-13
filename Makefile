@@ -5,12 +5,23 @@ lint:
 	uv run ruff format --check .
 
 typecheck:
-	uv run mypy ingest devlab
+	uv run --group lakehouse mypy ingest devlab lakehouse
 
 test:
 	uv run pytest -v
 
 check: lint typecheck test
+
+.PHONY: lakehouse-test
+
+# pyspark needs a JDK, and openjdk@17 is installed via brew but not linked, so
+# `java` is not on PATH. Setting JAVA_HOME here keeps that detail out of every
+# developer's shell profile. spark-avro is fetched from Maven on first run and
+# cached in ~/.ivy2 afterwards.
+JAVA_HOME_17 ?= /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home
+
+lakehouse-test:
+	JAVA_HOME=$(JAVA_HOME_17) uv run --group lakehouse pytest tests/lakehouse -v
 
 .PHONY: compose-up compose-down test-integration
 
@@ -64,6 +75,39 @@ notebook-test:
 
 notebook-clean:
 	uv run --group notebook nbstripout notebooks/*.ipynb
+
+.PHONY: pipeline-validate pipeline-deploy pipeline-run pipeline-refresh-bronze pipeline-status
+
+DB_PROFILE ?= tw
+DB_TARGET  ?= dev
+
+pipeline-validate:
+	databricks bundle validate -t $(DB_TARGET) --profile $(DB_PROFILE)
+
+pipeline-deploy:
+	databricks bundle deploy -t $(DB_TARGET) --profile $(DB_PROFILE)
+
+# Code changes take effect only after a deploy, so never run without one.
+pipeline-run: pipeline-deploy
+	databricks bundle run trades_bronze_silver -t $(DB_TARGET) --profile $(DB_PROFILE)
+
+pipeline-status:
+	databricks bundle summary -t $(DB_TARGET) --profile $(DB_PROFILE)
+
+# THE ONLY SANCTIONED RECOVERY after the weekly AWS sandbox wipe.
+#
+# The wipe destroys MSK, so bronze_trades_stream's Kafka checkpoint references
+# offsets on a topic that no longer exists. A whole-pipeline full refresh would
+# fix that and ALSO full-refresh silver_trades -- destroying accumulated history
+# whose source data is already gone. That is unrecoverable data loss.
+#
+# Refreshing only Bronze is safe: silver_trades is a keyed upsert, so replaying
+# Bronze re-upserts the same (venue, trade_id) keys and converges.
+#
+# There is deliberately no target for a full-pipeline refresh.
+pipeline-refresh-bronze: pipeline-deploy
+	databricks bundle run trades_bronze_silver -t $(DB_TARGET) --profile $(DB_PROFILE) \
+	  --full-refresh bronze_trades_stream
 
 .PHONY: up down rebuild smoke unlock
 
