@@ -721,6 +721,18 @@ warns about.
   A2 and A9.
 - **S3 Tables for managed Iceberg.** Its compaction and snapshot-expiry benefits are
   neutralised by the weekly wipe (D2). Revisit if storage ever becomes permanent.
+- **Amazon Redshift (native or Spectrum) for Gold.** Redshift earns its keep at BI-scale
+  concurrency — many analysts, complex multi-way joins, steady traffic that amortises a
+  standing cluster. This workload's actual Gold read pattern is narrow, highly selective
+  point-in-time queries from one agent plus a handful of scheduled dashboard queries —
+  exactly what Iceberg's `CLUSTER BY` pruning plus Athena's per-query pricing already
+  serves. A provisioned cluster's per-hour baseline alone exceeds the whole platform's
+  budget (§10); Redshift Serverless still meters against a persistent workgroup rather than
+  Athena's true pay-per-query-with-zero-idle-cost. Even via Spectrum — reading the same
+  Glue catalog without reloading data weekly — it would be a second compute layer against
+  files Athena already queries, for no functional gain at this concurrency. Revisit only if
+  this ever moves to a permanent account with sustained concurrent BI traffic large enough
+  to amortise a warehouse's standing cost.
 - **Amazon Bedrock for the agent.** No Message Batches API, no automatic prompt caching
   (§7.3). Retained as the A4 fallback.
 - **MWAA (managed Airflow) for orchestration.** ~$0.49/h minimum — more than the entire rest
