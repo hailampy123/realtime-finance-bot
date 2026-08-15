@@ -37,6 +37,14 @@ notebook = [
 lakehouse = [
     "pyspark==3.5.3",
 ]
+# Not a default group: boto3 is ~50MB and only the AWS-native workstream needs
+# it. `make check` and the Kafka producer image never install it, which is what
+# keeps `ingest/` free of an AWS dependency in practice as well as by convention.
+# Opt in with `uv sync --group awsnative`.
+awsnative = [
+    "boto3>=1.35",
+    "botocore>=1.35",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -46,7 +54,7 @@ build-backend = "setuptools.build_meta"
 # devlab is dev-loop tooling, not runtime. It is listed so `import devlab`
 # resolves from any working directory (Jupyter sets cwd to the notebook's own
 # folder); docker/Dockerfile never COPYs it, so it stays out of the image.
-include = ["ingest*", "backfill*", "devlab*", "lakehouse*"]
+include = ["ingest*", "backfill*", "devlab*", "lakehouse*", "awsnative*"]
 
 [tool.ruff]
 line-length = 100
