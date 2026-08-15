@@ -5,7 +5,7 @@ lint:
 	uv run ruff format --check .
 
 typecheck:
-	uv run --group lakehouse mypy ingest devlab lakehouse
+	uv run --group lakehouse --group awsnative mypy ingest devlab lakehouse awsnative
 
 test:
 	uv run pytest -v
@@ -140,3 +140,34 @@ smoke:
 	  --bootstrap "$$(terraform -chdir=$(DEV) output -raw bootstrap_brokers_public)" \
 	  --username  "$$(terraform -chdir=$(DEV) output -raw sasl_username)" \
 	  --password  "$$(terraform -chdir=$(DEV) output -raw sasl_password)"
+
+.PHONY: up-aws down-aws rebuild-aws preflight-aws logs-aws validate-aws
+
+NATIVE := infra/envs/native
+
+preflight-aws:
+	./scripts/native_preflight.sh
+
+# Offline: -backend=false skips the S3 backend, so this needs no AWS
+# credentials and can run in CI on a pull request. Deliberately not folded into
+# `make check`, which must stay runnable with no cloud tooling installed at all.
+validate-aws:
+	terraform -chdir=$(NATIVE) init -backend=false -input=false >/dev/null
+	terraform -chdir=$(NATIVE) validate
+	terraform -chdir=$(NATIVE) fmt -check -recursive ../../modules
+	@command -v tflint  >/dev/null && tflint --chdir=$(NATIVE) || echo "tflint not installed, skipped"
+	@command -v checkov >/dev/null && checkov -d $(NATIVE) --quiet --compact || echo "checkov not installed, skipped"
+
+up-aws:
+	./scripts/native_up.sh
+
+# force_destroy / force_delete are set on the lake bucket and the ECR repo, so
+# a non-empty bucket or a repo with images does not block teardown. Everything
+# here is re-derivable (spec section 6), which is what makes that safe.
+down-aws:
+	terraform -chdir=$(NATIVE) destroy -auto-approve
+
+rebuild-aws: down-aws up-aws
+
+logs-aws:
+	aws logs tail "$$(terraform -chdir=$(NATIVE) output -raw producer_log_group)" --follow
