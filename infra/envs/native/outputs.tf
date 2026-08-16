@@ -45,3 +45,19 @@ output "ecs_service" {
 output "producer_log_group" {
   value = module.producer.log_group
 }
+
+output "microbatch_state_machine_arn" {
+  value = module.medallion.state_machine_arn
+}
+
+output "microbatch_state_machine" {
+  value = module.medallion.state_machine_name
+}
+
+output "microbatch_log_group" {
+  value = module.medallion.log_group
+}
+
+output "microbatch_schedule" {
+  value = module.medallion.schedule_name
+}

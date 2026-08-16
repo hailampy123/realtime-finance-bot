@@ -1,2 +1,10 @@
 region                    = "ap-southeast-2"
 budget_notification_email = "you@example.com"
+
+# Stage N2/N3. Leave the schedule disarmed for the first pass: deploy the state
+# machine, start an execution by hand, read the graph, then flip this to true.
+# A failure you caused is much easier to read than one that arrived on a timer.
+microbatch_enabled = false
+
+# microbatch_schedule      = "rate(5 minutes)"
+# microbatch_lookback_days = 1

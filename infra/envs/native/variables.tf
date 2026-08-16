@@ -18,3 +18,29 @@ variable "monthly_budget_usd" {
   type        = number
   default     = 50
 }
+
+variable "microbatch_schedule" {
+  description = "How often Bronze is merged into Silver and Gold. Freshness against Athena spend."
+  type        = string
+  default     = "rate(5 minutes)"
+}
+
+variable "microbatch_enabled" {
+  description = <<-EOT
+    Arm the schedule. Set false to deploy the state machine and trigger it by
+    hand first -- the recommended way to meet stage N2, because a failure you
+    caused is much easier to read than one that arrived on a timer.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "microbatch_lookback_days" {
+  description = <<-EOT
+    How far back into Bronze each run reads. 1 means today and yesterday, which
+    covers the UTC midnight boundary. A cost dial, not a correctness one: the
+    merges are idempotent.
+  EOT
+  type        = number
+  default     = 1
+}

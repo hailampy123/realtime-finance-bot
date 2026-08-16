@@ -38,6 +38,25 @@ module "stream" {
   bronze_prefix      = module.lakehouse.bronze_prefix
 }
 
+module "medallion" {
+  source     = "../../modules/native_medallion"
+  project    = var.project
+  region     = data.aws_region.current.name
+  account_id = data.aws_caller_identity.current.account_id
+
+  lake_bucket_arn       = module.lakehouse.bucket_arn
+  glue_database_name    = module.lakehouse.glue_database_name
+  athena_workgroup_name = module.lakehouse.athena_workgroup_name
+
+  # The merge SQL has one home, awsnative/sql, read from here and from
+  # awsnative/render.py. path.root is infra/envs/native.
+  sql_dir = abspath("${path.root}/../../../awsnative/sql")
+
+  lookback_days       = var.microbatch_lookback_days
+  schedule_expression = var.microbatch_schedule
+  schedule_enabled    = var.microbatch_enabled
+}
+
 module "producer" {
   source            = "../../modules/native_producer"
   project           = var.project
