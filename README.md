@@ -33,22 +33,37 @@ Fargate → Kinesis → Firehose → Parquet on S3, queried with Athena. Shares
 `ingest/`, `config/universe.yaml`, and `ingest/schemas/trade.v1.avsc` with the
 Kafka/Databricks path and diverges below the sink.
 
+Above Bronze, one Step Functions state machine runs the whole medallion every
+five minutes: Bronze → `silver_trades` (keyed upsert) and
+`silver_trades_quarantine` (violations, never dropped) in parallel, then
+`gold_bars_1m` rebuilt for only the partitions that moved. Silver and Gold are
+Iceberg on plain S3; every transform is an Athena statement, so there is no code
+deployed above the producer.
+
 Design: [`docs/superpowers/specs/2026-08-14-aws-native-workstream-design.md`](docs/superpowers/specs/2026-08-14-aws-native-workstream-design.md)
-Build plan: [`docs/superpowers/plans/2026-08-14-aws-native-n0-n1.md`](docs/superpowers/plans/2026-08-14-aws-native-n0-n1.md)
+Run guides: [N0–N1](docs/superpowers/plans/2026-08-14-aws-native-n0-n1.md) · [N2–N3](docs/superpowers/plans/2026-08-16-aws-native-n2-n3.md)
+What N2–N3 added: [`docs/AWS_NATIVE_N2_N3_CHANGES.md`](docs/AWS_NATIVE_N2_N3_CHANGES.md)
 
 ```bash
 make preflight-aws   # prove the account permits every service this needs
 make up-aws          # empty account to trades in Bronze, a few minutes
+make ddl-aws         # create the Iceberg tables (also run by up-aws)
+make microbatch-aws  # run one Bronze -> Silver -> Gold cycle now
+make verify-aws      # the acceptance queries, with bytes scanned
 make logs-aws        # follow the producer
+make sfn-logs-aws    # follow the micro-batch
 make down-aws        # destroy it; the Kafka stack is untouched
 ```
 
 Both stacks can be up at once: separate VPCs, separate Terraform state keys in
-the same bucket, and a `fdai-native-*` naming prefix. Verify the data with the
-queries in [`awsnative/sql/verify_bronze.sql`](awsnative/sql/verify_bronze.sql).
+the same bucket, and a `fdai-native-*` naming prefix. Verify the data with
+[`awsnative/sql/verify_bronze.sql`](awsnative/sql/verify_bronze.sql) and
+[`awsnative/sql/verify_silver_gold.sql`](awsnative/sql/verify_silver_gold.sql).
 
-Stages N2–N6 (Silver, Gold, backfill, point-in-time serving, agent) are
-designed but not yet built — see §12 of the design.
+Stages N4–N6 (backfill, point-in-time serving, agent) are designed but not yet
+built — see §12 of the design. Because durability here is re-derivation, **N4 is
+what makes the weekly wipe survivable**: until it lands, Silver and Gold hold
+only what has streamed in since the last `make up-aws`.
 
 ## Prerequisites
 

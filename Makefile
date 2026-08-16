@@ -142,8 +142,17 @@ smoke:
 	  --password  "$$(terraform -chdir=$(DEV) output -raw sasl_password)"
 
 .PHONY: up-aws down-aws rebuild-aws preflight-aws logs-aws validate-aws
+.PHONY: ddl-aws microbatch-aws verify-aws sfn-logs-aws
 
 NATIVE := infra/envs/native
+
+# Read once, used by every target below that talks to Athena. Each is a
+# terraform output rather than a constant so there is one source of truth for
+# names, and so a target run against a destroyed stack fails loudly instead of
+# querying something that no longer exists.
+TF_DB := $$(terraform -chdir=$(NATIVE) output -raw glue_database)
+TF_WG := $$(terraform -chdir=$(NATIVE) output -raw athena_workgroup)
+TF_BUCKET := $$(terraform -chdir=$(NATIVE) output -raw lake_bucket)
 
 preflight-aws:
 	./scripts/native_preflight.sh
@@ -171,3 +180,37 @@ rebuild-aws: down-aws up-aws
 
 logs-aws:
 	aws logs tail "$$(terraform -chdir=$(NATIVE) output -raw producer_log_group)" --follow
+
+# --- stage N2/N3: the medallion micro-batch ---------------------------------
+
+# Idempotent. Terraform cannot create these tables: they are partitioned by
+# day(event_ts), an Iceberg transform Glue's CreateTable API cannot express.
+# See the module docstring in awsnative/ddl.py.
+ddl-aws:
+	uv run --group awsnative python -m awsnative.ddl \
+	  --database "$(TF_DB)" --workgroup "$(TF_WG)" --bucket "$(TF_BUCKET)"
+
+# One micro-batch, run now and waited on, regardless of the schedule. This is
+# how to meet stage N2: trigger it yourself and read the failure, rather than
+# finding out from a timer five minutes later.
+microbatch-aws:
+	@ARN=$$(terraform -chdir=$(NATIVE) output -raw microbatch_state_machine_arn); \
+	EXEC=$$(aws stepfunctions start-execution --state-machine-arn "$$ARN" \
+	          --query executionArn --output text); \
+	echo "started $$EXEC"; \
+	while :; do \
+	  STATUS=$$(aws stepfunctions describe-execution --execution-arn "$$EXEC" \
+	              --query status --output text); \
+	  [ "$$STATUS" = "RUNNING" ] || break; \
+	  sleep 5; \
+	done; \
+	echo "finished: $$STATUS"; \
+	[ "$$STATUS" = "SUCCEEDED" ]
+
+verify-aws:
+	uv run --group awsnative python -m awsnative.query \
+	  --database "$(TF_DB)" --workgroup "$(TF_WG)" \
+	  --file awsnative/sql/verify_silver_gold.sql
+
+sfn-logs-aws:
+	aws logs tail "$$(terraform -chdir=$(NATIVE) output -raw microbatch_log_group)" --follow
