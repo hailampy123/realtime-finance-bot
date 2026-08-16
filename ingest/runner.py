@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Protocol
 
 import structlog
 
@@ -10,15 +9,10 @@ from ingest.connectors.base import Connector
 from ingest.core.gaps import SequenceTracker
 from ingest.core.models import Trade
 from ingest.core.queue import BoundedTopicQueue
+from ingest.core.sinks import Sink
 from ingest.core.ws import ResilientWebSocket
 
 log = structlog.get_logger(__name__)
-
-
-class ProducerLike(Protocol):
-    def produce(self, topic: str, trade: Trade) -> None: ...
-    def poll(self, timeout: float = 0.0) -> int: ...
-    def flush(self, timeout: float = 10.0) -> int: ...
 
 
 class IngestRunner:
@@ -33,7 +27,7 @@ class IngestRunner:
     def __init__(
         self,
         connector: Connector,
-        producer: ProducerLike,
+        producer: Sink,
         tracker: SequenceTracker,
         queue: BoundedTopicQueue[Trade],
         topic: str = "md.trades.v1",

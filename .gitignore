@@ -18,3 +18,4 @@ infra/**/backend.tf
 infra/**/.terraform.lock.hcl
 infra/**/.ssh/
 *.pem
+.vscode/

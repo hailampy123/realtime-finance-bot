@@ -26,6 +26,30 @@ normally a disaster; here the loss is **atomic with the resources**, so state
 and reality stay consistent (both empty). This looks wrong at first glance —
 it isn't.
 
+## The AWS-native workstream
+
+A second implementation of the same use case on AWS-managed services —
+Fargate → Kinesis → Firehose → Parquet on S3, queried with Athena. Shares
+`ingest/`, `config/universe.yaml`, and `ingest/schemas/trade.v1.avsc` with the
+Kafka/Databricks path and diverges below the sink.
+
+Design: [`docs/superpowers/specs/2026-08-14-aws-native-workstream-design.md`](docs/superpowers/specs/2026-08-14-aws-native-workstream-design.md)
+Build plan: [`docs/superpowers/plans/2026-08-14-aws-native-n0-n1.md`](docs/superpowers/plans/2026-08-14-aws-native-n0-n1.md)
+
+```bash
+make preflight-aws   # prove the account permits every service this needs
+make up-aws          # empty account to trades in Bronze, a few minutes
+make logs-aws        # follow the producer
+make down-aws        # destroy it; the Kafka stack is untouched
+```
+
+Both stacks can be up at once: separate VPCs, separate Terraform state keys in
+the same bucket, and a `fdai-native-*` naming prefix. Verify the data with the
+queries in [`awsnative/sql/verify_bronze.sql`](awsnative/sql/verify_bronze.sql).
+
+Stages N2–N6 (Silver, Gold, backfill, point-in-time serving, agent) are
+designed but not yet built — see §12 of the design.
+
 ## Prerequisites
 
 - AWS credentials for the sandbox account (`AWS_PROFILE` or env vars)

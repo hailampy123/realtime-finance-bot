@@ -1,0 +1,23 @@
+# The AWS-native producer. Separate from docker/Dockerfile because the
+# `awsnative` dependency group is opt-in: the Kafka image must not carry ~50MB
+# of boto3 it never imports.
+FROM python:3.12-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.4 /uv /usr/local/bin/uv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --group awsnative
+
+COPY ingest/ ./ingest/
+COPY awsnative/ ./awsnative/
+COPY config/ ./config/
+
+ENV PATH="/app/.venv/bin:${PATH}"
+# No credentials baked in: the task role supplies them at runtime through the
+# ECS credential endpoint, and boto3 finds it with no configuration.
+CMD ["python", "-m", "awsnative.cli"]
