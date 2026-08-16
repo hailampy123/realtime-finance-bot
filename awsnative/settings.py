@@ -17,7 +17,15 @@ class NativeSettings(BaseSettings):
     no bootstrap_servers here to leave pointing at a dead broker.
     """
 
-    model_config = SettingsConfigDict(env_prefix="FDAI_NATIVE_", env_file=_ENV_FILE)
+    # The repo-level .env is shared with the Kafka producer. Pydantic passes
+    # every dotenv entry to validation, including keys outside env_prefix, so
+    # ignore those unrelated entries while still selecting native values only
+    # through FDAI_NATIVE_.
+    model_config = SettingsConfigDict(
+        env_prefix="FDAI_NATIVE_",
+        env_file=_ENV_FILE,
+        extra="ignore",
+    )
 
     stream_name: str = "fdai-native-md-trades-v1"
     universe_path: Path = Path("config/universe.yaml")

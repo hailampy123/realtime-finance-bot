@@ -150,15 +150,15 @@ def test_only_failed_records_are_retried() -> None:
     assert slept, "a throttled retry must back off before resending"
 
 
-def test_backoff_grows_between_attempts() -> None:
+def test_backoff_ceiling_grows_between_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("awsnative.sink.random.uniform", lambda _low, high: high)
     fake = FakeKinesis(failures=[{0}, {0}, {0}])
     sink, slept = make_sink(fake)
     sink.produce("md.trades.v1", make_trade())
 
     sink.flush()
 
-    assert len(slept) >= 3
-    assert slept[1] > slept[0]
+    assert slept == pytest.approx([0.1, 0.2, 0.4])
 
 
 def test_exhausting_retries_raises_rather_than_dropping() -> None:

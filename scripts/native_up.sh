@@ -29,12 +29,13 @@ terraform -chdir="$DIR" apply -auto-approve
 
 printf '\n==> building and pushing the producer image\n'
 REPO=$(terraform -chdir="$DIR" output -raw ecr_repository_url)
+IMAGE="${REPO}:latest"
 aws ecr get-login-password --region "$REGION" \
   | docker login --username AWS --password-stdin "${REPO%%/*}"
 # --platform is not optional: an arm64 image pushes fine and then dies in
 # Fargate with "exec format error".
-docker build --platform linux/amd64 -f docker/Dockerfile.awsnative -t "$REPO:latest" .
-docker push "$REPO:latest"
+docker build --platform linux/amd64 -f docker/Dockerfile.awsnative -t "$IMAGE" .
+docker push "$IMAGE"
 
 printf '\n==> forcing a new deployment so the service picks up the image\n'
 CLUSTER=$(terraform -chdir="$DIR" output -raw ecs_cluster)

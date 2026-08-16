@@ -133,6 +133,8 @@ except one IAM create-then-delete round trip. Listing roles proves nothing about
 - [ ] **Step 1: Confirm which account and region you're in**
 
 ```bash
+aws sso login --profile <configured-profile> # eg. fdai-sandbox
+export AWS_PROFILE=<configured-profile>
 aws sts get-caller-identity
 aws configure get region
 ```
@@ -730,21 +732,22 @@ that's expected and is checked for in Step 4 below; don't troubleshoot it yet.
 
 - [ ] **Step 2: Log in to ECR, build for the right architecture, and push**
 
+`--platform linux/amd64` is not optional on Apple Silicon. Without it the push succeeds and
+the task dies with `exec format error`, which says nothing about architecture.
+
 ```bash
 REGION=$(terraform -chdir=infra/envs/native output -raw region)
 REPO=$(terraform -chdir=infra/envs/native output -raw ecr_repository_url)
+IMAGE="${REPO}:latest"
 
 aws ecr get-login-password --region "$REGION" \
   | docker login --username AWS --password-stdin "${REPO%%/*}"
 
-# --platform linux/amd64 is not optional on Apple Silicon. Without it the push
-# succeeds and the task dies with "exec format error", which says nothing about
-# architecture.
 docker build --platform linux/amd64 \
   -f docker/Dockerfile.awsnative \
-  -t "$REPO:latest" .
+  -t "$IMAGE" .
 
-docker push "$REPO:latest"
+docker push "$IMAGE"
 ```
 
 Expected: `login succeeded`, a completed build, and a push ending in a `digest: sha256:...`
@@ -753,13 +756,13 @@ line.
 - [ ] **Step 3: Verify the pushed image's architecture, then smoke-test it locally**
 
 ```bash
-docker image inspect "$REPO:latest" --format '{{.Architecture}}'
+docker image inspect "${REPO}:latest" --format '{{.Architecture}}'
 ```
 
 Expected: **`amd64`**. If it says `arm64`, rebuild with `--platform`.
 
 ```bash
-docker run --rm --platform linux/amd64 "$REPO:latest" \
+docker run --rm --platform linux/amd64 "${REPO}:latest" \
   python -c "import awsnative.cli, boto3; print('imports ok', boto3.__version__)"
 ```
 
