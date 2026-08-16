@@ -157,13 +157,26 @@ TF_BUCKET := $$(terraform -chdir=$(NATIVE) output -raw lake_bucket)
 preflight-aws:
 	./scripts/native_preflight.sh
 
-# Offline: -backend=false skips the S3 backend, so this needs no AWS
-# credentials and can run in CI on a pull request. Deliberately not folded into
-# `make check`, which must stay runnable with no cloud tooling installed at all.
+# Offline: no AWS credentials, so this runs in CI on a pull request.
+# Deliberately not folded into `make check`, which must stay runnable with no
+# cloud tooling installed at all.
+#
+# TF_DATA_DIR is load-bearing, and -backend=false alone is not enough: once the
+# real .terraform exists, Terraform reads the S3 backend config recorded there
+# and validates its credentials even when told not to re-initialise the backend.
+# A separate data dir has no backend recorded, so nothing is validated -- and it
+# leaves the working .terraform untouched, so this target cannot disturb a
+# deployed stack.
+TF_VALIDATE_DIR := .terraform-validate
+
 validate-aws:
-	terraform -chdir=$(NATIVE) init -backend=false -input=false >/dev/null
-	terraform -chdir=$(NATIVE) validate
+	TF_DATA_DIR=$(TF_VALIDATE_DIR) terraform -chdir=$(NATIVE) init -backend=false -input=false >/dev/null
+	TF_DATA_DIR=$(TF_VALIDATE_DIR) terraform -chdir=$(NATIVE) validate
 	terraform -chdir=$(NATIVE) fmt -check -recursive ../../modules
+	# terraform validate does NOT evaluate templatefile(), so the merge SQL is
+	# unchecked until apply without this. It also proves the state machine runs
+	# the same bytes the offline tests assert against.
+	./scripts/native_render_parity.sh
 	@command -v tflint  >/dev/null && tflint --chdir=$(NATIVE) || echo "tflint not installed, skipped"
 	@command -v checkov >/dev/null && checkov -d $(NATIVE) --quiet --compact || echo "checkov not installed, skipped"
 
