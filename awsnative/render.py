@@ -38,15 +38,31 @@ KNOWN_PLACEHOLDERS = frozenset(
     {"database", "warehouse", "lookback_days", "valid_expr", "dirty_cte"}
 )
 
-# Applied in name order: Silver before quarantine before Gold. The numeric
-# prefixes are the ordering, so a future table slots in without renaming.
-DDL_FILES = ("010_silver_trades.sql", "020_silver_trades_quarantine.sql", "030_gold_bars_1m.sql")
+# Applied in name order: Silver before quarantine before Gold, then stage N4's
+# manifest and staging tables. The numeric prefixes are the ordering, so a future
+# table slots in without renaming.
+DDL_FILES = (
+    "010_silver_trades.sql",
+    "020_silver_trades_quarantine.sql",
+    "030_gold_bars_1m.sql",
+    "040_backfill_manifest.sql",
+    "041_archive_staging_klines.sql",
+    "042_archive_staging_trades.sql",
+    "043_backfill_outcomes.sql",
+)
 
 # The three statements the micro-batch state machine runs. Terraform reads the
 # same files; keep the names in sync with infra/modules/native_medallion.
 MERGE_SILVER = "merge_silver_trades.sql"
 MERGE_QUARANTINE = "merge_silver_quarantine.sql"
 MERGE_GOLD = "merge_gold_bars_1m.sql"
+
+# Stage N4's three statements. The backfill state machine runs them in this order:
+# outcomes first so the manifest records the run even if a merge then fails, then
+# the two tier merges. Terraform reads the same files.
+MERGE_MANIFEST_OUTCOMES = "merge_manifest_outcomes.sql"
+MERGE_SILVER_ARCHIVE = "merge_silver_from_archive.sql"
+MERGE_GOLD_ARCHIVE = "merge_gold_from_archive.sql"
 
 
 def read_sql(relative: str) -> str:
@@ -132,4 +148,18 @@ def merge_statements(database: str, lookback_days: int = 1) -> dict[str, str]:
             database=database,
             dirty_cte=dirty_from_bronze(database, lookback_days),
         ),
+    }
+
+
+def backfill_statements(database: str) -> dict[str, str]:
+    """Stage N4's three statements, keyed by filename.
+
+    No `lookback_days` and no dirty CTE: a backfill's scope is whatever the loader
+    staged, which the state machine emptied beforehand. The window lives in the
+    seed step (awsnative/backfill/seed.py), not in the SQL, so re-running a merge
+    cannot widen or narrow what a run covered.
+    """
+    return {
+        name: render(read_sql(name), database=database)
+        for name in (MERGE_MANIFEST_OUTCOMES, MERGE_SILVER_ARCHIVE, MERGE_GOLD_ARCHIVE)
     }

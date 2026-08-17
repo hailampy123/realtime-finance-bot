@@ -146,12 +146,25 @@ def test_gold_merge_embeds_the_dirty_cte() -> None:
 
 def test_ddl_renders_a_warehouse_location_per_table() -> None:
     statements = dict(render.ddl_statements("fdai_native", "s3://some-bucket"))
-    assert len(statements) == 3
+    # Asserted against DDL_FILES rather than a literal, so adding a table does not
+    # require editing a count that carries no meaning of its own.
+    assert list(statements) == list(render.DDL_FILES)
     for name, sql in statements.items():
         assert "${" not in sql, f"{name} still has an unrendered placeholder"
-        assert "'table_type'        = 'ICEBERG'" in sql
+        assert f"LOCATION 's3://some-bucket/{_table_of(name)}/" in sql
     assert "s3://some-bucket/silver_trades/" in statements["010_silver_trades.sql"]
     assert "s3://some-bucket/gold_bars_1m/" in statements["030_gold_bars_1m.sql"]
+
+
+def _table_of(ddl_filename: str) -> str:
+    """`030_gold_bars_1m.sql` -> `gold_bars_1m`. The prefix is ordering, not name.
+
+    backfill_outcomes is the one table whose location is not its name: it reads
+    what Distributed Map's ResultWriter already writes under `_backfill/outcomes/`,
+    so the path is the writer's, not ours to choose.
+    """
+    stem = ddl_filename.removesuffix(".sql").split("_", 1)[1]
+    return "_backfill/outcomes" if stem == "backfill_outcomes" else stem
 
 
 def test_ddl_tolerates_a_warehouse_with_or_without_a_trailing_slash() -> None:
