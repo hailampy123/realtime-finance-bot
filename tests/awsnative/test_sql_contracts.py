@@ -71,15 +71,20 @@ MERGE_TARGET_DDL = (
     "020_silver_trades_quarantine.sql",
     "030_gold_bars_1m.sql",
     "040_backfill_manifest.sql",
+    "052_silver_perp_context.sql",
+    "053_silver_macro.sql",
 )
 
-# Read-only sources. Staging is emptied and rewritten per run by the loader, and
-# backfill_outcomes is written by Step Functions' ResultWriter -- so neither is a
-# MERGE target, and both are external text tables on purpose.
+# Read-only sources. Staging is emptied and rewritten per run by the loader,
+# backfill_outcomes is written by Step Functions' ResultWriter, and the two Bronze
+# tables are written by the enrichment Lambdas -- none is a MERGE target, and all
+# are external text tables on purpose (D1: append-only needs no Iceberg).
 READ_ONLY_DDL = (
     "041_archive_staging_klines.sql",
     "042_archive_staging_trades.sql",
     "043_backfill_outcomes.sql",
+    "050_bronze_perp_context.sql",
+    "051_bronze_macro_observations.sql",
 )
 
 

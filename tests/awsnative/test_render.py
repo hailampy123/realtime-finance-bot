@@ -150,7 +150,12 @@ def test_ddl_renders_a_warehouse_location_per_table() -> None:
     # require editing a count that carries no meaning of its own.
     assert list(statements) == list(render.DDL_FILES)
     for name, sql in statements.items():
-        assert "${" not in sql, f"{name} still has an unrendered placeholder"
+        # ${ingest_date} is the one $-form that must SURVIVE rendering: Athena's
+        # partition projection reads it at query time, so the DDL escapes it as
+        # $${ingest_date} and both renderers emit the literal. Anything else still
+        # carrying a ${...} was a placeholder the caller forgot.
+        leftover = sql.replace("${ingest_date}", "")
+        assert "${" not in leftover, f"{name} still has an unrendered placeholder"
         assert f"LOCATION 's3://some-bucket/{_table_of(name)}/" in sql
     assert "s3://some-bucket/silver_trades/" in statements["010_silver_trades.sql"]
     assert "s3://some-bucket/gold_bars_1m/" in statements["030_gold_bars_1m.sql"]
