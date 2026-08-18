@@ -44,3 +44,32 @@ variable "microbatch_lookback_days" {
   type        = number
   default     = 1
 }
+
+variable "enrichment_enabled" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Arms the two enrichment schedules. Off by default for the same reason the
+    micro-batch is: the first apply of a stage should not start spending before
+    anyone has looked at it.
+  EOT
+}
+
+variable "enrichment_instrument_pairs" {
+  type = list(list(string))
+  default = [
+    ["BTC-USD", "BTCUSDT"],
+    ["ETH-USD", "ETHUSDT"],
+    ["SOL-USD", "SOLUSDT"],
+    ["XRP-USD", "XRPUSDT"],
+    ["ADA-USD", "ADAUSDT"],
+    ["LINK-USD", "LINKUSDT"],
+    ["AVAX-USD", "AVAXUSDT"],
+    ["DOGE-USD", "DOGEUSDT"],
+  ]
+  description = <<-EOT
+    [[instrument_id, venue_symbol], ...]. Mirrors config/universe.yaml's binance
+    entries; Terraform cannot read the YAML, so the two are kept in step by
+    tests/awsnative/test_enrichment_wiring.py rather than by hope.
+  EOT
+}
