@@ -1,7 +1,10 @@
-# AWS Post-Deployment Verification and Debugging
+# AWS post-deployment verification and debugging
 
 Use this runbook after `make up`, or when Terraform, MSK, the EC2 producer, or
-Kafka connectivity fails. The most useful debugging order is:
+Kafka connectivity fails. It covers Stack A only. For Stack B, run
+`make verify-aws` and `make sfn-logs-aws`.
+
+Check in this order:
 
 ```text
 AWS identity
@@ -31,8 +34,8 @@ group but does not change AWS infrastructure or topic data. The automated MSK
 notebook preflight below may reconcile the two Terraform-managed operator
 security-group rules when the laptop IP changed.
 
-For the two recurring notebook failures—expired profile credentials and a
-changed laptop public IP—use the automated entry point instead of the manual
+Two notebook failures recur: expired profile credentials, and a changed laptop
+public IP. For both, use the automated entry point rather than the manual
 sections below:
 
 ```bash

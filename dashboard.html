@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data layer — daily health and enrichment</title>
+<style>
+:root { color-scheme: light dark; }
+.viz-root {
+  --surface-1: #fcfcfb; --surface-2: #f4f3f0; --border: #e2e1dc;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #6f6e6a;
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  --grid: #e8e7e2;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) .viz-root {
+    --surface-1: #1a1a19; --surface-2: #232322; --border: #383835;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #9a9990;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+    --grid: #2e2e2c;
+  }
+}
+:root[data-theme="dark"] .viz-root {
+  --surface-1: #1a1a19; --surface-2: #232322; --border: #383835;
+  --text-primary: #ffffff; --text-secondary: #c3c2b7; --text-muted: #9a9990;
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+  --grid: #2e2e2c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--surface-2); }
+.viz-root {
+  background: var(--surface-2); color: var(--text-primary); min-height: 100vh;
+  font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding: 28px clamp(16px, 4vw, 48px) 64px;
+}
+header.viz-head { display:flex; align-items:baseline; gap:16px;
+                    flex-wrap:wrap; margin-bottom:4px; }
+h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+.viz-meta { color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.viz-lede { color: var(--text-secondary); max-width: 68ch; margin: 8px 0 24px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em;
+     color: var(--text-secondary); margin: 32px 0 12px; font-weight: 600; }
+.viz-tiles { display:grid; gap:12px;
+               grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); }
+.viz-tile { background: var(--surface-1); border:1px solid var(--border);
+              border-radius:10px; padding:14px 16px; }
+.viz-tile-label { color: var(--text-secondary); font-size:12px; }
+.viz-tile-value { font-size:26px; font-weight:600; letter-spacing:-0.02em;
+                   font-variant-numeric: tabular-nums; margin:2px 0 6px; }
+.viz-tile-state { font-size:12px; color: var(--text-secondary);
+                    display:flex; align-items:center; gap:6px; }
+.viz-tile-state strong { color: var(--text-primary); }
+.viz-dot { width:9px; height:9px; border-radius:50%; flex:none; }
+.viz-flow { display:flex; flex-direction:column; gap:16px; }
+.viz-grid-2 { display:grid; gap:16px;
+                grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); }
+.viz-panel { background: var(--surface-1); border:1px solid var(--border);
+              border-radius:10px; padding:14px 16px 8px; margin:0; }
+.viz-panel svg { width:100%; height:auto; display:block; overflow:visible; }
+figcaption { display:flex; gap:10px; align-items:baseline;
+               flex-wrap:wrap; margin-bottom:6px; }
+.viz-title { font-weight:600; }
+.viz-sub { color: var(--text-muted); font-size:12px; }
+.viz-legend { display:flex; gap:14px; flex-wrap:wrap; margin:2px 0 8px; font-size:12px;
+               color: var(--text-secondary); }
+.viz-key { display:inline-flex; align-items:center; gap:6px; }
+.viz-key i { width:10px; height:10px; border-radius:3px; display:inline-block; }
+.viz-grid { stroke: var(--grid); stroke-width:1; }
+.viz-zero { stroke: var(--text-muted); stroke-width:1; stroke-dasharray:3 3; }
+.viz-tick { fill: var(--text-muted); font-size:10px; font-variant-numeric: tabular-nums; }
+.viz-direct { fill: var(--text-primary); font-size:11px; font-weight:600;
+               font-variant-numeric: tabular-nums; }
+.viz-end { stroke: var(--surface-1); stroke-width:2; }
+.viz-hit { cursor: crosshair; }
+.viz-hit:hover circle[r="10"] {
+  fill: color-mix(in oklab, var(--text-primary) 12%, transparent); }
+.viz-nodata { display:grid; place-items:center; color: var(--text-muted); font-size:13px;
+               border:1px dashed var(--border); border-radius:8px; }
+.viz-table { margin-top:10px; font-size:12px; }
+.viz-table summary { cursor:pointer; color: var(--text-secondary); }
+.viz-table table { border-collapse:collapse; margin-top:8px; width:100%; }
+.viz-table th, .viz-table td { border-bottom:1px solid var(--border);
+                                 padding:4px 8px;
+                                text-align:right; font-variant-numeric: tabular-nums; }
+.viz-table th:first-child, .viz-table td:first-child { text-align:left; }
+footer.viz-foot { margin-top:40px; color: var(--text-muted); font-size:12px;
+                   border-top:1px solid var(--border); padding-top:12px; max-width:80ch; }
+@media print { .viz-panel { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<div class="viz-root">
+<header class="viz-head">
+  <h1>Data layer — daily health and enrichment</h1>
+  <span class="viz-meta">fdai_native · generated 2026-08-18 06:03 UTC</span>
+</header>
+<p class="viz-lede">Top row: is the pipeline running and is anything being dropped. Below: what the derivatives and macro enrichment lets you see that price and size alone cannot.</p>
+<h2>Freshness</h2><div class="viz-tiles"><div class="viz-tile" data-status="critical">
+  <div class="viz-tile-label">silver_perp_context</div>
+  <div class="viz-tile-value">no rows</div>
+  <div class="viz-tile-state"><span class="viz-dot" style="background:#d03b3b"></span>
+    <strong>FAIL</strong> never written</div>
+</div><div class="viz-tile" data-status="critical">
+  <div class="viz-tile-label">silver_macro</div>
+  <div class="viz-tile-value">no rows</div>
+  <div class="viz-tile-state"><span class="viz-dot" style="background:#d03b3b"></span>
+    <strong>FAIL</strong> never written</div>
+</div><div class="viz-tile" data-status="good">
+  <div class="viz-tile-label">silver_trades</div>
+  <div class="viz-tile-value">3 min</div>
+  <div class="viz-tile-state"><span class="viz-dot" style="background:#0ca30c"></span>
+    <strong>OK</strong> 3,529,927 rows · within the 5-minute cadence</div>
+</div><div class="viz-tile" data-status="good">
+  <div class="viz-tile-label">gold_bars_1m</div>
+  <div class="viz-tile-value">2 min</div>
+  <div class="viz-tile-state"><span class="viz-dot" style="background:#0ca30c"></span>
+    <strong>OK</strong> 22,431 rows · within the 5-minute cadence</div>
+</div></div><h2>Volume and quarantine</h2><div class="viz-flow"><figure class="viz-panel">
+  <figcaption><span class="viz-title">Rows landed per day, by layer</span>
+    <span class="viz-sub">last 7 days</span></figcaption>
+  <div class="viz-legend"><span class="viz-key"><i style="background:var(--series-1)"></i>Bronze trades</span><span class="viz-key"><i style="background:var(--series-2)"></i>Gold bars</span><span class="viz-key"><i style="background:var(--series-3)"></i>Silver trades</span></div>
+  <svg viewBox="0 0 720 240" role="img"
+       aria-label="Rows landed per day, by layer. last 7 days">
+    <line class="viz-grid" x1="64" y1="208.0" x2="704" y2="208.0"/><text class="viz-tick" x="56" y="212.0" text-anchor="end">0</text><line class="viz-grid" x1="64" y1="160.0" x2="704" y2="160.0"/><text class="viz-tick" x="56" y="164.0" text-anchor="end">559.8k</text><line class="viz-grid" x1="64" y1="112.0" x2="704" y2="112.0"/><text class="viz-tick" x="56" y="116.0" text-anchor="end">1.1M</text><line class="viz-grid" x1="64" y1="64.0" x2="704" y2="64.0"/><text class="viz-tick" x="56" y="68.0" text-anchor="end">1.7M</text><line class="viz-grid" x1="64" y1="16.0" x2="704" y2="16.0"/><text class="viz-tick" x="56" y="20.0" text-anchor="end">2.2M</text>
+    <g class="viz-hit"><rect x="70.0" y="141.2" width="65.1" height="66.8" rx="4" fill="var(--series-1)"/><title>Bronze trades · 2026-08-16: 778.6k</title></g><g class="viz-hit"><rect x="137.1" y="207.3" width="65.1" height="0.7" rx="4" fill="var(--series-2)"/><title>Gold bars · 2026-08-16: 8.0k</title></g><g class="viz-hit"><rect x="204.2" y="142.5" width="65.1" height="65.5" rx="4" fill="var(--series-3)"/><title>Silver trades · 2026-08-16: 763.8k</title></g><g class="viz-hit"><rect x="283.3" y="16.0" width="65.1" height="192.0" rx="4" fill="var(--series-1)"/><title>Bronze trades · 2026-08-17: 2.2M</title></g><g class="viz-hit"><rect x="350.4" y="207.0" width="65.1" height="1.0" rx="4" fill="var(--series-2)"/><title>Gold bars · 2026-08-17: 11.5k</title></g><g class="viz-hit"><rect x="417.6" y="17.2" width="65.1" height="190.8" rx="4" fill="var(--series-3)"/><title>Silver trades · 2026-08-17: 2.2M</title></g><g class="viz-hit"><rect x="496.7" y="161.1" width="65.1" height="46.9" rx="4" fill="var(--series-1)"/><title>Bronze trades · 2026-08-18: 547.3k</title></g><g class="viz-hit"><rect x="563.8" y="207.8" width="65.1" height="0.5" rx="4" fill="var(--series-2)"/><title>Gold bars · 2026-08-18: 2.9k</title></g><g class="viz-hit"><rect x="630.9" y="161.6" width="65.1" height="46.4" rx="4" fill="var(--series-3)"/><title>Silver trades · 2026-08-18: 541.0k</title></g><text class="viz-tick" x="170.7" y="230" text-anchor="middle">2026-08-16</text><text class="viz-tick" x="384.0" y="230" text-anchor="middle">2026-08-17</text><text class="viz-tick" x="597.3" y="230" text-anchor="middle">2026-08-18</text>
+  </svg>
+</figure><details class="viz-table">
+  <summary>Rows landed per day — table view</summary>
+  <table><thead><tr><th scope="col">Day</th><th scope="col">Layer</th><th scope="col">Rows</th></tr></thead><tbody><tr><td>2026-08-16</td><td>Bronze trades</td><td>778581</td></tr><tr><td>2026-08-16</td><td>Gold bars</td><td>8019</td></tr><tr><td>2026-08-16</td><td>Silver trades</td><td>763773</td></tr><tr><td>2026-08-17</td><td>Bronze trades</td><td>2239318</td></tr><tr><td>2026-08-17</td><td>Gold bars</td><td>11516</td></tr><tr><td>2026-08-17</td><td>Silver trades</td><td>2225134</td></tr><tr><td>2026-08-18</td><td>Bronze trades</td><td>547298</td></tr><tr><td>2026-08-18</td><td>Gold bars</td><td>2896</td></tr><tr><td>2026-08-18</td><td>Silver trades</td><td>541020</td></tr></tbody></table>
+</details><figure class="viz-panel">
+  <figcaption><span class="viz-title">Quarantine rate</span>
+    <span class="viz-sub">violations are never dropped, only diverted (spec §5.4)</span></figcaption>
+  <svg viewBox="0 0 720 200" role="img"
+       aria-label="Quarantine rate. violations are never dropped, only diverted (spec §5.4)">
+    <g class="viz-hit"><rect x="142.7" y="30.0" width="56.0" height="138.0" rx="4" fill="var(--series-2)"/><title>2026-08-16: 49.95%</title></g><text class="viz-direct" x="170.7" y="24.0" text-anchor="middle">49.948%</text><g class="viz-hit"><rect x="356.0" y="118.2" width="56.0" height="49.8" rx="4" fill="var(--series-2)"/><title>2026-08-17: 18.01%</title></g><text class="viz-direct" x="384.0" y="112.2" text-anchor="middle">18.015%</text><g class="viz-hit"><rect x="569.3" y="168.0" width="56.0" height="1.0" rx="4" fill="var(--series-2)"/><title>2026-08-18: 0%</title></g><text class="viz-direct" x="597.3" y="162.0" text-anchor="middle">0%</text><text class="viz-tick" x="170.7" y="190" text-anchor="middle">2026-08-16</text><text class="viz-tick" x="384.0" y="190" text-anchor="middle">2026-08-17</text><text class="viz-tick" x="597.3" y="190" text-anchor="middle">2026-08-18</text>
+  </svg>
+</figure></div><h2>Perpetual context · BTC-USD</h2><div class="viz-flow"><figure class="viz-panel viz-empty">
+  <figcaption><span class="viz-title">BTC-USD · Mark price</span></figcaption>
+  <div class="viz-nodata" style="height:85px">no rows in the window</div>
+</figure><figure class="viz-panel viz-empty">
+  <figcaption><span class="viz-title">BTC-USD · Funding rate</span></figcaption>
+  <div class="viz-nodata" style="height:85px">no rows in the window</div>
+</figure><figure class="viz-panel viz-empty">
+  <figcaption><span class="viz-title">BTC-USD · Open interest</span></figcaption>
+  <div class="viz-nodata" style="height:85px">no rows in the window</div>
+</figure></div>
+<footer class="viz-foot"><p>Macro values are filtered on vintage_date, never observation_date: a CPI print is stamped with the month it measures and published about six weeks later, then revised. Filtering on the observation date would show a backtest numbers that did not exist yet.</p><p>The three perpetual panels share one x-axis and have separate y-axes on purpose. Price, a funding rate near zero and an open interest in the tens of thousands share no scale, and putting two of them on one plot with two y-scales would let the author choose the correlation you see.</p><p>Every chart has a table view. Numbers here are whatever the tables held when the page was generated; the account is wiped weekly.</p></footer>
+</div>
+</body>
+</html>
