@@ -749,3 +749,58 @@ warns about.
   bucket in an account the user controls at the AWS level, which is not available. Rejected
   on availability, not on merit; it is the first thing to revisit if a permanent account
   appears.
+
+## 14. Amendments from implementation
+
+A design that says one thing while the code does another is worse than no design, because
+it is read and believed. These are the places where building stages N2 and N3 changed the
+answer, recorded here rather than by quietly editing the sections above — the original
+reasoning is still worth being able to read.
+
+**A1 — Quarantine is a `MERGE`, not an `INSERT` (amends §5.4).** §5.4's shape is right: two
+complementary predicates, violations never dropped. Its verb is wrong. The micro-batch
+re-reads an overlapping Bronze window every five minutes, so an `INSERT` would re-add the
+same bad row 288 times a day and the quarantine rate would measure the schedule rather than
+the data. It is keyed on a hash of the raw tuple rather than on `(venue, trade_id)`, because
+a row can be quarantined precisely *for* having a `NULL` natural key and `NULL = NULL` is
+never true.
+
+**A2 — The validity predicate is `COALESCE`-guarded on both sides (extends §5.4).** Firehose's
+OpenX deserializer writes `NULL` for any JSON key the Glue schema does not name, and `NULL`
+propagates through a predicate *and* its negation alike. Without the guard, a malformed row
+is rejected by `p` and also by `NOT p`, and lands in neither table — exactly the silent drop
+§5.4 forbids. The predicate therefore lives in one fragment wrapped identically by both
+merges, and an offline test asserts the two rendered predicates are literally `X` and
+`NOT X`.
+
+**A3 — The dirty-partition set is a CTE, not a value passed between states (refines D3).**
+Athena's `MERGE` reports no affected rows, so there is nothing for the Silver state to
+return. The Gold merge derives the set itself, from the same bounded Bronze window the
+Silver merge read — the same set, with no state travelling between states. D3's actual
+invariant, that both writers share one bars computation, is preserved by making the dirty
+selector a rendered fragment: N4's backfill substitutes a selector over `archive_staging`
+and the aggregation beneath it does not change.
+
+**A4 — Iceberg tables are created through Athena, not Terraform (amends §8).**
+`silver_trades` and `gold_bars_1m` are partitioned by `day(event_ts)`, an Iceberg partition
+transform. Glue's `CreateTable` API accepts identity partitions only and cannot express it
+under any configuration, so `aws_glue_catalog_table` is not an option. The DDL runs as a
+step in `make up-aws`. §8's claim narrows accordingly: **`make up-aws` reproduces a stage
+from empty; `terraform apply` alone does not.** That was already true — `docker build` and
+`docker push` have stood outside Terraform since N1 — and is now stated rather than implied.
+
+**A5 — The micro-batch skips rather than overlaps (new).** A five-minute schedule and an
+occasionally slower merge would otherwise run two executions at once. Two concurrent `MERGE`s
+into one Iceberg table do not corrupt it — the second loses the optimistic lock and fails —
+but they pay twice for one result and the failure reads like a bug. The state machine counts
+its own running executions through a Step Functions AWS SDK integration and skips. Skipping
+is correct rather than queueing: the next tick reads the same window, so nothing is missed
+by not running now.
+
+**A6 — Bronze stays partitioned daily (§5.1 unchanged, but not by default).** Re-scanning the
+current day's Bronze every five minutes looks obviously wrong, and hourly partitioning
+obviously right, until it is checked against §10's stated operating discipline. At ~130 h/month
+rather than 24/7, a working session re-scans single-digit gigabytes in total — cents. Hourly
+partitioning would save nothing at that duty cycle and would cost a rewrite of live N1
+infrastructure. It remains the correct lever the moment this runs continuously, and is
+recorded in the N2/N3 run guide's cost table as such.

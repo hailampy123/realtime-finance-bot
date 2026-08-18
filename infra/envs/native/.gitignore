@@ -1,5 +1,8 @@
 backend.tf
 terraform.tfvars
 .terraform/
+# `make validate-aws` uses its own data dir so it never touches the real
+# .terraform, and so it stays runnable with no AWS credentials.
+.terraform-validate/
 *.tfstate
 *.tfstate.backup

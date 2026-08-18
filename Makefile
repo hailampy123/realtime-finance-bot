@@ -142,19 +142,41 @@ smoke:
 	  --password  "$$(terraform -chdir=$(DEV) output -raw sasl_password)"
 
 .PHONY: up-aws down-aws rebuild-aws preflight-aws logs-aws validate-aws
+.PHONY: ddl-aws microbatch-aws verify-aws sfn-logs-aws
 
 NATIVE := infra/envs/native
+
+# Read once, used by every target below that talks to Athena. Each is a
+# terraform output rather than a constant so there is one source of truth for
+# names, and so a target run against a destroyed stack fails loudly instead of
+# querying something that no longer exists.
+TF_DB := $$(terraform -chdir=$(NATIVE) output -raw glue_database)
+TF_WG := $$(terraform -chdir=$(NATIVE) output -raw athena_workgroup)
+TF_BUCKET := $$(terraform -chdir=$(NATIVE) output -raw lake_bucket)
 
 preflight-aws:
 	./scripts/native_preflight.sh
 
-# Offline: -backend=false skips the S3 backend, so this needs no AWS
-# credentials and can run in CI on a pull request. Deliberately not folded into
-# `make check`, which must stay runnable with no cloud tooling installed at all.
+# Offline: no AWS credentials, so this runs in CI on a pull request.
+# Deliberately not folded into `make check`, which must stay runnable with no
+# cloud tooling installed at all.
+#
+# TF_DATA_DIR is load-bearing, and -backend=false alone is not enough: once the
+# real .terraform exists, Terraform reads the S3 backend config recorded there
+# and validates its credentials even when told not to re-initialise the backend.
+# A separate data dir has no backend recorded, so nothing is validated -- and it
+# leaves the working .terraform untouched, so this target cannot disturb a
+# deployed stack.
+TF_VALIDATE_DIR := .terraform-validate
+
 validate-aws:
-	terraform -chdir=$(NATIVE) init -backend=false -input=false >/dev/null
-	terraform -chdir=$(NATIVE) validate
+	TF_DATA_DIR=$(TF_VALIDATE_DIR) terraform -chdir=$(NATIVE) init -backend=false -input=false >/dev/null
+	TF_DATA_DIR=$(TF_VALIDATE_DIR) terraform -chdir=$(NATIVE) validate
 	terraform -chdir=$(NATIVE) fmt -check -recursive ../../modules
+	# terraform validate does NOT evaluate templatefile(), so the merge SQL is
+	# unchecked until apply without this. It also proves the state machine runs
+	# the same bytes the offline tests assert against.
+	./scripts/native_render_parity.sh
 	@command -v tflint  >/dev/null && tflint --chdir=$(NATIVE) || echo "tflint not installed, skipped"
 	@command -v checkov >/dev/null && checkov -d $(NATIVE) --quiet --compact || echo "checkov not installed, skipped"
 
@@ -171,3 +193,37 @@ rebuild-aws: down-aws up-aws
 
 logs-aws:
 	aws logs tail "$$(terraform -chdir=$(NATIVE) output -raw producer_log_group)" --follow
+
+# --- stage N2/N3: the medallion micro-batch ---------------------------------
+
+# Idempotent. Terraform cannot create these tables: they are partitioned by
+# day(event_ts), an Iceberg transform Glue's CreateTable API cannot express.
+# See the module docstring in awsnative/ddl.py.
+ddl-aws:
+	uv run --group awsnative python -m awsnative.ddl \
+	  --database "$(TF_DB)" --workgroup "$(TF_WG)" --bucket "$(TF_BUCKET)"
+
+# One micro-batch, run now and waited on, regardless of the schedule. This is
+# how to meet stage N2: trigger it yourself and read the failure, rather than
+# finding out from a timer five minutes later.
+microbatch-aws:
+	@ARN=$$(terraform -chdir=$(NATIVE) output -raw microbatch_state_machine_arn); \
+	EXEC=$$(aws stepfunctions start-execution --state-machine-arn "$$ARN" \
+	          --query executionArn --output text); \
+	echo "started $$EXEC"; \
+	while :; do \
+	  STATUS=$$(aws stepfunctions describe-execution --execution-arn "$$EXEC" \
+	              --query status --output text); \
+	  [ "$$STATUS" = "RUNNING" ] || break; \
+	  sleep 5; \
+	done; \
+	echo "finished: $$STATUS"; \
+	[ "$$STATUS" = "SUCCEEDED" ]
+
+verify-aws:
+	uv run --group awsnative python -m awsnative.query \
+	  --database "$(TF_DB)" --workgroup "$(TF_WG)" \
+	  --file awsnative/sql/verify_silver_gold.sql
+
+sfn-logs-aws:
+	aws logs tail "$$(terraform -chdir=$(NATIVE) output -raw microbatch_log_group)" --follow
