@@ -49,9 +49,10 @@ variable "enrichment_enabled" {
   type        = bool
   default     = false
   description = <<-EOT
-    Arms the two enrichment schedules. Off by default for the same reason the
-    micro-batch is: the first apply of a stage should not start spending before
-    anyone has looked at it.
+    Arms the four enrichment schedules: the perp and macro collectors, and
+    their Silver merges. Off by default for the same reason the micro-batch is:
+    the first apply of a stage should not start spending before anyone has
+    looked at it.
   EOT
 }
 

@@ -77,3 +77,19 @@ output "enrichment_perp_log_group" {
 output "enrichment_macro_log_group" {
   value = module.enrichment.macro_log_group
 }
+
+output "enrichment_merge_perp_state_machine" {
+  value = module.enrichment.merge_perp_state_machine_arn
+}
+
+output "enrichment_merge_macro_state_machine" {
+  value = module.enrichment.merge_macro_state_machine_arn
+}
+
+output "enrichment_merge_perp_log_group" {
+  value = module.enrichment.merge_perp_log_group
+}
+
+output "enrichment_merge_macro_log_group" {
+  value = module.enrichment.merge_macro_log_group
+}

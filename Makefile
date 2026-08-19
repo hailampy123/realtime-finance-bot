@@ -249,6 +249,25 @@ enrich-aws:
 enrich-logs-aws:
 	aws logs tail "$$(terraform -chdir=$(NATIVE) output -raw enrichment_perp_log_group)" --follow
 
+# One cycle of both Silver merges, run now and waited on, regardless of their
+# schedules -- same reason as microbatch-aws: a failure you caused here is
+# easier to read than one that arrived on a timer.
+merge-enrich-aws:
+	@for ARN in "$$(terraform -chdir=$(NATIVE) output -raw enrichment_merge_perp_state_machine)" \
+	            "$$(terraform -chdir=$(NATIVE) output -raw enrichment_merge_macro_state_machine)"; do \
+	  EXEC=$$(aws stepfunctions start-execution --state-machine-arn "$$ARN" \
+	            --query executionArn --output text); \
+	  echo "started $$EXEC"; \
+	  while :; do \
+	    STATUS=$$(aws stepfunctions describe-execution --execution-arn "$$EXEC" \
+	                --query status --output text); \
+	    [ "$$STATUS" = "RUNNING" ] || break; \
+	    sleep 5; \
+	  done; \
+	  echo "finished: $$STATUS"; \
+	  [ "$$STATUS" = "SUCCEEDED" ] || exit 1; \
+	done
+
 # Build the static dashboard. Self-contained: it opens from file:// with no
 # network, which is what "show me it worked" has to mean when the account is
 # wiped every seven days.

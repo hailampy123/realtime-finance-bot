@@ -170,14 +170,14 @@ Firehose (trades) and the two Lambdas (enrichment).
 | Pipeline | Source → landing → transform → table |
 |---|---|
 | Trades | Binance/Coinbase WS → `ingest/` on Fargate → Kinesis → Firehose → `bronze_trades_stream` → `merge_silver_trades.sql` → `silver_trades`, and `merge_silver_quarantine.sql` → `silver_trades_quarantine` → `merge_gold_bars_1m.sql` → `gold_bars_1m` |
-| Perpetual context | Binance REST → `perp_handler` Lambda (direct `s3:PutObject`) → `bronze_perp_context` → `merge_silver_perp_context.sql` (not triggered, §6) → `silver_perp_context` |
-| Macro | ALFRED CSV → `macro_handler` Lambda (direct `s3:PutObject`) → `bronze_macro_observations` → `merge_silver_macro.sql` (not triggered, §6) → `silver_macro` |
+| Perpetual context | Binance REST → `perp_handler` Lambda (direct `s3:PutObject`) → `bronze_perp_context` → `merge_silver_perp_context.sql`, its own state machine (§6) → `silver_perp_context` |
+| Macro | ALFRED CSV → `macro_handler` Lambda (direct `s3:PutObject`) → `bronze_macro_observations` → `merge_silver_macro.sql`, its own state machine (§6) → `silver_macro` |
 | Backfill (stage N4, unbuilt) | `data.binance.vision` archive → `awsnative.backfill.loader` → `archive_staging_klines` / `archive_staging_trades` → `merge_silver_from_archive.sql` / `merge_gold_from_archive.sql` → `silver_trades` / `gold_bars_1m`; load outcomes → `merge_manifest_outcomes.sql` → `backfill_manifest` |
 | Dashboard | `silver_perp_context`, `silver_macro`, `gold_bars_1m` → `awsnative.dashboard` → `dashboard.html` (reads only, writes no table) |
 
 ## 6. Scheduling
 
-Three independent trigger mechanisms feed this lake. None of them share a
+Four independent trigger mechanisms feed this lake. None of them share a
 scheduler, and arming one does not arm another.
 
 | Writes | Trigger | Interval | Armed by | Shipped default |
@@ -186,7 +186,19 @@ scheduler, and arming one does not arm another.
 | `silver_trades`, `silver_trades_quarantine`, `gold_bars_1m` | EventBridge Scheduler → Step Functions `fdai-native-microbatch` | `rate(5 minutes)` | `microbatch_enabled` | `false` on first apply |
 | `bronze_perp_context` | EventBridge Scheduler → `perp_handler` Lambda, direct invoke | `rate(5 minutes)` | `enrichment_enabled` | `false` |
 | `bronze_macro_observations` | EventBridge Scheduler → `macro_handler` Lambda, direct invoke | `cron(30 6 * * ? *)` UTC | `enrichment_enabled` | `false` |
-| `silver_perp_context`, `silver_macro` | **none** | n/a | n/a | Bronze fills on schedule; nothing calls `render.enrichment_statements()` from Terraform or the Makefile, so the merge never runs by itself |
+| `silver_perp_context` | EventBridge Scheduler → Step Functions `fdai-native-enrichment-merge-perp` | `rate(5 minutes)` | `enrichment_enabled` | `false` |
+| `silver_macro` | EventBridge Scheduler → Step Functions `fdai-native-enrichment-merge-macro` | `cron(30 6 * * ? *)` UTC | `enrichment_enabled` | `false` |
+
+Each merge state machine is a single `athena:startQueryExecution.sync` Task
+behind the same overlap guard the trade micro-batch uses: a
+`ListExecutions`/`Choice` pair that skips this tick if the previous run is
+still going, since two concurrent `MERGE`s into the same Iceberg table pay
+twice and then fail on the commit lock (§12, deviation A5). Both merges are
+deliberately **separate** from `fdai-native-microbatch` and from each other:
+folding the macro merge into a 5-minute cadence would rescan
+`bronze_macro_observations` and `silver_macro` in full for data that changes
+at most once a day, and a shared state machine would make `microbatch_enabled`
+and `enrichment_enabled` stop being independent switches.
 
 `terraform.tfvars` is gitignored, so the table above shows shipped defaults,
 not what is armed in any one account. Check the live state:
@@ -194,21 +206,17 @@ not what is armed in any one account. Check the live state:
 ```bash
 terraform -chdir=infra/envs/native output microbatch_schedule
 aws scheduler get-schedule --name fdai-native-microbatch --query State --output text
+aws scheduler get-schedule --name fdai-native-enrichment-merge-perp --query State --output text
+aws scheduler get-schedule --name fdai-native-enrichment-merge-macro --query State --output text
 ```
 
 Run any stage once, regardless of what is armed:
 
 ```bash
-make microbatch-aws   # one Silver+Gold cycle now; blocks until it finishes
-make enrich-aws       # both collectors, once, synchronous
+make microbatch-aws    # one Silver+Gold cycle now; blocks until it finishes
+make enrich-aws        # both collectors, once, synchronous
+make merge-enrich-aws  # both Silver merges, once each; blocks until both finish
 ```
-
-**To close the `silver_perp_context` / `silver_macro` gap:** add both merges as
-Athena states to the existing `MergeLayers` parallel block in
-[`native_medallion/main.tf`](../infra/modules/native_medallion/main.tf). They
-read different Bronze tables and write different Silver tables, so they run
-alongside `MergeSilver` and `MergeQuarantine` on the same 5-minute schedule
-with no new scheduler needed.
 
 ## 7. Freshness
 
@@ -221,7 +229,8 @@ Lag from the source event to a queryable row. Worst case unless noted.
 | `gold_bars_1m` | same order as Silver, plus one more sequential Athena statement | Gold runs after both Silver branches complete, in the same execution |
 | `bronze_perp_context` | up to 5 min | poll cadence |
 | `bronze_macro_observations` | up to 24 h | one pull a day, after US markets settle |
-| `silver_perp_context`, `silver_macro` | **never**, at present | no scheduled merge; see §6 |
+| `silver_perp_context` | up to ~10 min | its merge runs on the same 5-minute schedule as the poll; a miss converges on the next tick, same tolerance as trades |
+| `silver_macro` | up to 24 h | its merge runs right after the daily poll on the same schedule |
 
 `awsnative/sql/dashboard/02_freshness.sql` computes the first four rows live,
 as the lag between the newest row and now.
@@ -239,8 +248,8 @@ has run long enough in a real account to measure it (§13).
 | `gold_bars_1m` | 8 instruments × 1,440 minutes/day | 11,520 rows/day, well under 1 MB/day |
 | `bronze_perp_context` | 288 polls/day × ~4 KB | ~1.2 MB/day |
 | `bronze_macro_observations` | 1 pull/day, 6 series | well under 1 MB/day |
-| `silver_perp_context` | 8 instruments × 288 samples/day, once the merge runs | 2,304 rows/day |
-| `silver_macro` | 6 series, 1 revised monthly, once the merge runs | a handful of new rows/day |
+| `silver_perp_context` | 8 instruments × 288 samples/day | 2,304 rows/day |
+| `silver_macro` | 6 series, 1 revised monthly | a handful of new rows/day |
 | `backfill_manifest`, `archive_staging_klines`, `archive_staging_trades`, `backfill_outcomes` | stage N4 is unbuilt | 0 today |
 
 `awsnative/sql/dashboard/01_layer_counts.sql` gives live row counts once data
@@ -345,13 +354,10 @@ The design is
 | A5 | not specified | the state machine skips when an execution is already running | Concurrent Iceberg merges pay twice and then fail on the commit lock |
 | A6 | Bronze partitioned daily (§5.1) | unchanged, after measuring the alternative | Hourly partitions look right until you measure them against §10's ~130 hours a month; then they save nothing and cost a rewrite of live N1 infrastructure |
 | n/a | Perp poller writes through Firehose ([enrichment design](superpowers/specs/2026-08-17-data-layer-enrichment-derivatives-and-macro-design.md) §6) | writes directly with `s3:PutObject`, no Firehose | At 288 polls/day and ~4 KB each, buffering adds latency and no meaningful saving; see the `native_enrichment` module header |
+| n/a | Perp/macro merges run inside the trade micro-batch (same design, §6) | each gets its own state machine and schedule, in `native_enrichment` | Folding macro into the 5-minute trade cadence would rescan two tables in full 288 times a day; separate schedules also keep `microbatch_enabled` and `enrichment_enabled` independent, as designed |
 
 ## 13. What the layer does not do yet
 
-- **No enrichment merge trigger.** `silver_perp_context` and `silver_macro`
-  have DDL and passing merge SQL, but nothing schedules either one. The
-  collectors fill Bronze; Silver stays empty until something calls
-  `render.enrichment_statements()`. See §6.
 - **No history.** Silver and Gold hold only what has streamed in since the last
   `make up-aws`. Stage N4's backfill is what makes the weekly wipe survivable.
 - **No reconciliation.** Comparing stream-derived bars against archive klines

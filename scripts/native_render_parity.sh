@@ -35,14 +35,23 @@ locals {
   merge_gold = templatefile("${var.sql_dir}/merge_gold_bars_1m.sql", {
     database = "parity_check", dirty_cte = local.dirty_cte
   })
+  merge_perp_context = templatefile("${var.sql_dir}/merge_silver_perp_context.sql", {
+    database = "parity_check", lookback_days = 1
+  })
+  merge_macro = templatefile("${var.sql_dir}/merge_silver_macro.sql", {
+    database = "parity_check"
+  })
 }
 # One map, because a Terraform output name may not contain a dot and these are
-# keyed by filename to line up with what render.merge_statements() returns.
+# keyed by filename to line up with what render.merge_statements() and
+# render.enrichment_statements() return.
 output "rendered" {
   value = {
-    "merge_silver_trades.sql"     = local.merge_silver
-    "merge_silver_quarantine.sql" = local.merge_quarantine
-    "merge_gold_bars_1m.sql"      = local.merge_gold
+    "merge_silver_trades.sql"       = local.merge_silver
+    "merge_silver_quarantine.sql"   = local.merge_quarantine
+    "merge_gold_bars_1m.sql"        = local.merge_gold
+    "merge_silver_perp_context.sql" = local.merge_perp_context
+    "merge_silver_macro.sql"        = local.merge_macro
   }
 }
 HCL
@@ -58,10 +67,13 @@ import difflib
 import json
 import sys
 
-from awsnative.render import merge_statements
+from awsnative.render import enrichment_statements, merge_statements
 
 terraform = json.load(open(sys.argv[1]))["rendered"]["value"]
-python = merge_statements("parity_check", lookback_days=1)
+python = {
+    **merge_statements("parity_check", lookback_days=1),
+    **enrichment_statements("parity_check", lookback_days=1),
+}
 
 if set(terraform) != set(python):
     print(f"different statement sets: terraform {sorted(terraform)} vs python {sorted(python)}")

@@ -17,6 +17,38 @@ locals {
   name       = "${var.project}-native-enrichment"
   perp_name  = "${local.name}-perp"
   macro_name = "${local.name}-macro"
+
+  merge_perp_name  = "${local.name}-merge-perp"
+  merge_macro_name = "${local.name}-merge-macro"
+
+  # Constructed rather than referenced, matching native_medallion: the merge
+  # role needs states:ListExecutions on each state machine, and each state
+  # machine needs the role -- a circular dependency if taken from the resource
+  # attribute instead.
+  merge_perp_arn  = "arn:aws:states:${var.region}:${var.account_id}:stateMachine:${local.merge_perp_name}"
+  merge_macro_arn = "arn:aws:states:${var.region}:${var.account_id}:stateMachine:${local.merge_macro_name}"
+
+  # Same files awsnative/render.py reads for enrichment_statements(). Keep the
+  # parameter set in step with render.KNOWN_PLACEHOLDERS; tests/awsnative/
+  # test_render.py fails if a .sql file starts using a name outside it.
+  merge_perp_context = templatefile("${var.sql_dir}/merge_silver_perp_context.sql", {
+    database      = var.glue_database_name
+    lookback_days = var.merge_lookback_days
+  })
+
+  merge_macro = templatefile("${var.sql_dir}/merge_silver_macro.sql", {
+    database = var.glue_database_name
+  })
+
+  # Both merges are idempotent MERGEs against Iceberg, so a blind retry
+  # converges rather than double-counting -- same reasoning as
+  # native_medallion's athena_retry.
+  athena_retry = [{
+    ErrorEquals     = ["States.ALL"]
+    IntervalSeconds = 20
+    MaxAttempts     = 3
+    BackoffRate     = 2.0
+  }]
 }
 
 # The package is awsnative/enrichment plus the namespace __init__, and nothing
@@ -168,11 +200,18 @@ resource "aws_iam_role_policy" "scheduler" {
   role = aws_iam_role.scheduler.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "lambda:InvokeFunction"
-      Resource = [aws_lambda_function.perp.arn, aws_lambda_function.macro.arn]
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = [aws_lambda_function.perp.arn, aws_lambda_function.macro.arn]
+      },
+      {
+        Effect   = "Allow"
+        Action   = "states:StartExecution"
+        Resource = [local.merge_perp_arn, local.merge_macro_arn]
+      },
+    ]
   })
 }
 
@@ -224,6 +263,332 @@ resource "aws_scheduler_schedule" "macro" {
 
     # Two retries here, unlike the perp poller: the next attempt is a day away,
     # not five minutes, so a transient failure is worth one more try.
+    retry_policy {
+      maximum_retry_attempts = 2
+    }
+  }
+}
+
+# --- the two Silver merges ---------------------------------------------------
+#
+# Each gets its own state machine on its own schedule, rather than a state
+# folded into either the trades micro-batch or each other. Two reasons, not
+# one: microbatch_enabled and enrichment_enabled are meant to arm independent
+# things, so a shared machine would make one flag silently control the other;
+# and the macro merge has no lookback window, so running it every 5 minutes
+# alongside the perp merge would rescan bronze_macro_observations and
+# silver_macro in full for data that changes at most once a day.
+#
+# Same overlap-guard shape as native_medallion. One Task each instead of a
+# Parallel plus a sequential Gold: each merge is a single independent
+# statement, so there is nothing here to sequence.
+
+data "aws_iam_policy_document" "merge_sfn_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["states.amazonaws.com"]
+    }
+  }
+}
+
+# One role for both machines: each runs a single idempotent MERGE against the
+# same lake bucket and the same Glue database, differing only in which table --
+# two roles would be two copies of one policy, echoing the Lambda role above.
+resource "aws_iam_role" "merge_sfn" {
+  name               = "${local.name}-merge"
+  assume_role_policy = data.aws_iam_policy_document.merge_sfn_trust.json
+}
+
+data "aws_iam_policy_document" "merge_sfn_permissions" {
+  statement {
+    sid    = "RunAthenaQueries"
+    effect = "Allow"
+    actions = [
+      "athena:StartQueryExecution",
+      "athena:StopQueryExecution",
+      "athena:GetQueryExecution",
+      "athena:GetQueryResults",
+      "athena:GetWorkGroup",
+      "athena:GetDataCatalog",
+    ]
+    resources = [
+      "arn:aws:athena:${var.region}:${var.account_id}:workgroup/${var.athena_workgroup_name}",
+      "arn:aws:athena:${var.region}:${var.account_id}:datacatalog/AwsDataCatalog",
+    ]
+  }
+
+  # Iceberg commits go through Glue, same as native_medallion: a commit is an
+  # UpdateTable with optimistic locking on the current metadata pointer.
+  # Scoped to the two tables this role ever touches, narrower than
+  # native_medallion's database-wide grant.
+  statement {
+    sid    = "ReadAndCommitIcebergMetadata"
+    effect = "Allow"
+    actions = [
+      "glue:GetDatabase",
+      "glue:GetDatabases",
+      "glue:GetTable",
+      "glue:GetTables",
+      "glue:UpdateTable",
+      "glue:CreateTable",
+      "glue:DeleteTable",
+      "glue:GetPartition",
+      "glue:GetPartitions",
+      "glue:BatchGetPartition",
+      "glue:CreatePartition",
+      "glue:BatchCreatePartition",
+      "glue:UpdatePartition",
+      "glue:DeletePartition",
+      "glue:BatchDeletePartition",
+    ]
+    resources = [
+      "arn:aws:glue:${var.region}:${var.account_id}:catalog",
+      "arn:aws:glue:${var.region}:${var.account_id}:database/${var.glue_database_name}",
+      "arn:aws:glue:${var.region}:${var.account_id}:table/${var.glue_database_name}/silver_perp_context",
+      "arn:aws:glue:${var.region}:${var.account_id}:table/${var.glue_database_name}/silver_macro",
+    ]
+  }
+
+  # DeleteObject is required and easy to miss: an Iceberg MERGE rewrites data
+  # files and expires the old ones. Scoped to the two Bronze prefixes this role
+  # reads and the two Silver prefixes it writes, not the whole bucket.
+  statement {
+    sid    = "ReadBronzeAndWriteSilver"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+      "s3:AbortMultipartUpload",
+    ]
+    resources = [
+      "${var.lake_bucket_arn}/bronze_perp_context/*",
+      "${var.lake_bucket_arn}/bronze_macro_observations/*",
+      "${var.lake_bucket_arn}/silver_perp_context/*",
+      "${var.lake_bucket_arn}/silver_macro/*",
+    ]
+  }
+
+  # ListBucket is a bucket-level action -- it cannot be scoped by object ARN --
+  # so the s3:prefix condition is what keeps it from seeing the rest of the lake.
+  statement {
+    sid       = "ListOnlyThoseFourPrefixes"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+    resources = [var.lake_bucket_arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values = [
+        "bronze_perp_context/*",
+        "bronze_macro_observations/*",
+        "silver_perp_context/*",
+        "silver_macro/*",
+      ]
+    }
+  }
+
+  # The overlap guard on each machine reads its own execution list.
+  statement {
+    sid       = "SeeItsOwnExecutions"
+    effect    = "Allow"
+    actions   = ["states:ListExecutions"]
+    resources = [local.merge_perp_arn, local.merge_macro_arn]
+  }
+
+  # Step Functions' logging configuration requires these on "*", same as
+  # native_medallion: the delivery is created by the service, not by us, so it
+  # cannot be scoped to a log group.
+  statement {
+    sid    = "DeliverExecutionLogs"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogDelivery",
+      "logs:GetLogDelivery",
+      "logs:UpdateLogDelivery",
+      "logs:DeleteLogDelivery",
+      "logs:ListLogDeliveries",
+      "logs:PutResourcePolicy",
+      "logs:DescribeResourcePolicies",
+      "logs:DescribeLogGroups",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "merge_sfn" {
+  name   = "${local.name}-merge"
+  role   = aws_iam_role.merge_sfn.id
+  policy = data.aws_iam_policy_document.merge_sfn_permissions.json
+}
+
+resource "aws_cloudwatch_log_group" "merge_perp" {
+  name              = "/aws/vendedlogs/states/${local.merge_perp_name}"
+  retention_in_days = var.log_retention_days
+}
+
+resource "aws_cloudwatch_log_group" "merge_macro" {
+  name              = "/aws/vendedlogs/states/${local.merge_macro_name}"
+  retention_in_days = var.log_retention_days
+}
+
+resource "aws_sfn_state_machine" "merge_perp" {
+  name     = local.merge_perp_name
+  role_arn = aws_iam_role.merge_sfn.arn
+
+  logging_configuration {
+    log_destination        = "${aws_cloudwatch_log_group.merge_perp.arn}:*"
+    include_execution_data = true
+    level                  = "ALL"
+  }
+
+  definition = jsonencode({
+    Comment = "bronze_perp_context -> silver_perp_context, on the perp poll's own schedule"
+    StartAt = "CountRunningExecutions"
+    States = {
+      CountRunningExecutions = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::aws-sdk:sfn:listExecutions"
+        Parameters = {
+          "StateMachineArn.$" = "$$.StateMachine.Id"
+          StatusFilter        = "RUNNING"
+          MaxResults          = 2
+        }
+        ResultSelector = { "running.$" = "States.ArrayLength($.Executions)" }
+        ResultPath     = "$.overlap"
+        Next           = "AlreadyRunning"
+      }
+
+      AlreadyRunning = {
+        Type = "Choice"
+        Choices = [{
+          Variable           = "$.overlap.running"
+          NumericGreaterThan = 1
+          Next               = "SkippedOverlappingRun"
+        }]
+        Default = "MergePerpContext"
+      }
+
+      SkippedOverlappingRun = {
+        Type = "Succeed"
+      }
+
+      MergePerpContext = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.merge_perp_context
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        End            = true
+      }
+    }
+  })
+}
+
+resource "aws_sfn_state_machine" "merge_macro" {
+  name     = local.merge_macro_name
+  role_arn = aws_iam_role.merge_sfn.arn
+
+  logging_configuration {
+    log_destination        = "${aws_cloudwatch_log_group.merge_macro.arn}:*"
+    include_execution_data = true
+    level                  = "ALL"
+  }
+
+  definition = jsonencode({
+    Comment = "bronze_macro_observations -> silver_macro, once a day after the macro pull"
+    StartAt = "CountRunningExecutions"
+    States = {
+      CountRunningExecutions = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::aws-sdk:sfn:listExecutions"
+        Parameters = {
+          "StateMachineArn.$" = "$$.StateMachine.Id"
+          StatusFilter        = "RUNNING"
+          MaxResults          = 2
+        }
+        ResultSelector = { "running.$" = "States.ArrayLength($.Executions)" }
+        ResultPath     = "$.overlap"
+        Next           = "AlreadyRunning"
+      }
+
+      AlreadyRunning = {
+        Type = "Choice"
+        Choices = [{
+          Variable           = "$.overlap.running"
+          NumericGreaterThan = 1
+          Next               = "SkippedOverlappingRun"
+        }]
+        Default = "MergeMacro"
+      }
+
+      SkippedOverlappingRun = {
+        Type = "Succeed"
+      }
+
+      MergeMacro = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.merge_macro
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        End            = true
+      }
+    }
+  })
+}
+
+resource "aws_scheduler_schedule" "merge_perp" {
+  name  = local.merge_perp_name
+  state = var.schedules_enabled ? "ENABLED" : "DISABLED"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = var.perp_schedule
+  schedule_expression_timezone = "UTC"
+
+  target {
+    arn      = aws_sfn_state_machine.merge_perp.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    # Zero retries, matching the perp poll's own schedule: the next tick is
+    # five minutes away and reads a fresher Bronze window regardless.
+    retry_policy {
+      maximum_retry_attempts = 0
+    }
+  }
+}
+
+resource "aws_scheduler_schedule" "merge_macro" {
+  name  = local.merge_macro_name
+  state = var.schedules_enabled ? "ENABLED" : "DISABLED"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = var.macro_schedule
+  schedule_expression_timezone = "UTC"
+
+  target {
+    arn      = aws_sfn_state_machine.merge_macro.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    # Two retries, matching the macro poll's own schedule: the next attempt is
+    # a day away, so a transient failure to even start is worth retrying.
     retry_policy {
       maximum_retry_attempts = 2
     }

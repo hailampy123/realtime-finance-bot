@@ -67,3 +67,38 @@ variable "log_retention_days" {
   type    = number
   default = 7
 }
+
+# --- the two Silver merges ---------------------------------------------------
+
+variable "sql_dir" {
+  type        = string
+  description = <<-EOT
+    Absolute path to awsnative/sql. Both merges are rendered from the same
+    .sql files awsnative/render.py reads, so the transform has one definition
+    rather than one per consumer.
+  EOT
+}
+
+variable "glue_database_name" {
+  type = string
+}
+
+variable "athena_workgroup_name" {
+  type = string
+}
+
+variable "merge_lookback_days" {
+  type        = number
+  default     = 1
+  description = <<-EOT
+    How far back into bronze_perp_context the perp merge reads. Unused by the
+    macro merge, which has no lookback window: it re-reads whatever vintages
+    Bronze holds and inserts only the values that are new.
+  EOT
+}
+
+variable "query_timeout_seconds" {
+  type        = number
+  default     = 600
+  description = "Per-Athena-statement timeout for both merge state machines."
+}

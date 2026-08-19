@@ -76,8 +76,13 @@ MERGE_MANIFEST_OUTCOMES = "merge_manifest_outcomes.sql"
 MERGE_SILVER_ARCHIVE = "merge_silver_from_archive.sql"
 MERGE_GOLD_ARCHIVE = "merge_gold_from_archive.sql"
 
-# Slices E1 and E3. Both run in the existing micro-batch, after the trade merges:
-# the enrichment tables are read alongside Gold, never joined into it.
+# Slices E1 and E3. Each runs in its own state machine
+# (infra/modules/native_enrichment), on the same schedule as the collector that
+# feeds it, rather than as a state inside the trade micro-batch: folding macro
+# into a 5-minute cadence would rescan bronze_macro_observations and
+# silver_macro in full for data that changes at most once a day, and a shared
+# machine would make microbatch_enabled and enrichment_enabled stop being
+# independent switches.
 MERGE_PERP_CONTEXT = "merge_silver_perp_context.sql"
 MERGE_MACRO = "merge_silver_macro.sql"
 

@@ -71,13 +71,18 @@ module "producer" {
 # Slices E1 and E3. Two scheduled Lambdas, no stream and no secret -- see the
 # module header for why each of those is absent rather than forgotten.
 module "enrichment" {
-  source           = "../../modules/native_enrichment"
-  project          = var.project
-  region           = var.region
-  account_id       = data.aws_caller_identity.current.account_id
-  lake_bucket_name = module.lakehouse.bucket_name
-  lake_bucket_arn  = module.lakehouse.bucket_arn
-  source_dir       = abspath("${path.root}/../../..")
+  source                = "../../modules/native_enrichment"
+  project               = var.project
+  region                = var.region
+  account_id            = data.aws_caller_identity.current.account_id
+  lake_bucket_name      = module.lakehouse.bucket_name
+  lake_bucket_arn       = module.lakehouse.bucket_arn
+  glue_database_name    = module.lakehouse.glue_database_name
+  athena_workgroup_name = module.lakehouse.athena_workgroup_name
+  source_dir            = abspath("${path.root}/../../..")
+
+  # The merge SQL has one home, awsnative/sql, same as module "medallion" above.
+  sql_dir = abspath("${path.root}/../../../awsnative/sql")
 
   instrument_pairs  = var.enrichment_instrument_pairs
   schedules_enabled = var.enrichment_enabled

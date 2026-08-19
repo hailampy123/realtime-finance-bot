@@ -253,8 +253,8 @@ flowchart LR
 
     BronzeT --> SilverT
     BronzeT --> Quar
-    BronzeP -. "no merge wired, see\nDATA_LAYER.md §6" .-> SilverP
-    BronzeM -. "no merge wired, see\nDATA_LAYER.md §6" .-> SilverM
+    BronzeP --> SilverP
+    BronzeM --> SilverM
     SilverT --> GoldB
 
     Archive["data.binance.vision\nklines + aggTrades"]:::planned
@@ -277,13 +277,12 @@ Backfill code exists in [`awsnative/backfill/`](../awsnative/backfill/) and its
 tables have DDL, but no scheduled process runs it. Until stage N4 lands, Silver
 and Gold hold only what has streamed in since the last bring-up.
 
-**`silver_perp_context` and `silver_macro` exist and stay empty.** Both tables
-are created by `make ddl-aws` and both merge statements
-(`merge_silver_perp_context.sql`, `merge_silver_macro.sql`) pass their tests,
-but nothing calls `render.enrichment_statements()` from Terraform or the
-Makefile. Arming `enrichment_enabled` starts the two collectors and fills
-Bronze; it does not fill Silver. Full detail:
-[`DATA_LAYER.md`](DATA_LAYER.md) §6.
+**Perp and macro Silver each get their own state machine.** `perp_handler` and
+`macro_handler` fill Bronze; a separate Step Functions machine per table
+merges it into `silver_perp_context` and `silver_macro`, on the same schedule
+as the collector that feeds it. Neither shares the trade micro-batch's state
+machine or schedule, and both are armed by the same `enrichment_enabled` flag
+that arms the collectors. Full detail: [`DATA_LAYER.md`](DATA_LAYER.md) §6.
 
 ### 4.2 Where it runs
 
@@ -422,12 +421,12 @@ reconnects.
 
 **Stack B.** `make up-aws` creates every solid box in §4.2 and fills Bronze,
 Silver, and Gold from the live trade stream. Arming `enrichment_enabled` fills
-`bronze_perp_context` and `bronze_macro_observations` too, but their Silver
-tables have no scheduled writer (§4.1). That is a gap in the shipped code, not
-a missing stage. Stages N4 (backfill and reconciliation), N5 (point-in-time
-boundary), and N6 (agent) are designed and unbuilt, as are slices E2
-(order-book liquidity) and E4 (narrative). Table maintenance (`OPTIMIZE`,
-`VACUUM`) is designed and unbuilt.
+`bronze_perp_context`/`bronze_macro_observations` and, through their own
+state machines, `silver_perp_context`/`silver_macro` too (§4.1). Stages N4
+(backfill and reconciliation), N5 (point-in-time boundary), and N6 (agent) are
+designed and unbuilt, as are slices E2 (order-book liquidity) and E4
+(narrative). Table maintenance (`OPTIMIZE`, `VACUUM`) is designed and
+unbuilt.
 
 **Both.** Equity coverage stays IEX-only on Alpaca's free tier, roughly 2% of
 volume; crypto carries the streaming workload. Nothing in either stack has run
