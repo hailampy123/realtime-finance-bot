@@ -1,151 +1,153 @@
 # finance_data_ai
 
-Streaming market-data and LLM trading-decision platform.
-Design: [`docs/superpowers/specs/2026-08-07-finance-data-ai-platform-design.md`](docs/superpowers/specs/2026-08-07-finance-data-ai-platform-design.md)
-Setup, prerequisites, manual AWS/Databricks steps, data sources, and config variables: [`docs/SETUP.md`](docs/SETUP.md)
-Current-state diagrams (data flow + deployed AWS topology, built vs. designed-only): [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-Post-deployment AWS verification and debugging commands: [`docs/AWS_DEPLOYMENT_DEBUGGING.md`](docs/AWS_DEPLOYMENT_DEBUGGING.md)
+Streaming market-data and LLM trading-decision platform. The same use case is
+implemented twice, on Kafka with Databricks and on AWS-managed services, over
+one shared ingestion contract.
+
+**Where to read next:** [`docs/README.md`](docs/README.md) maps every document
+to the question it answers. The short version:
+
+| Question | Document |
+|---|---|
+| How do I install and configure it? | [`docs/SETUP.md`](docs/SETUP.md) |
+| What is built, and what is only designed? | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Where does the data live? | [`docs/DATA_LAYER.md`](docs/DATA_LAYER.md) |
+| Which file do I change? | [`docs/CODEBASE_EXPLAINED.md`](docs/CODEBASE_EXPLAINED.md) |
+| It broke after a deploy. | [`docs/AWS_DEPLOYMENT_DEBUGGING.md`](docs/AWS_DEPLOYMENT_DEBUGGING.md) |
+| Why was it built this way? | [`docs/superpowers/specs/`](docs/superpowers/specs/) |
 
 ## The reproducibility contract
 
-The AWS sandbox account is wiped every 7 days, so **nothing durable lives in
-it**. Unity Catalog managed Delta in the permanent Databricks account is the
-system of record; the sandbox is pure ephemeral compute.
+The AWS sandbox account is wiped every 7 days, so nothing durable lives in it.
+Two rules follow, and they shape every other decision in the repo.
 
-- `make up` — empty AWS account to streaming data. Budget 45–60 minutes: three
-  serial MSK operations (create, then the ACL configuration and public access
-  that MSK requires in that order — see [`docs/SETUP.md`](docs/SETUP.md) §5f).
-- `make down` — destroys the sandbox. Databricks is untouched.
-- `make rebuild` — both, in order.
-- `make unlock` — recovery hatch if a bootstrap dies midway and leaves the
-  cluster denying every client.
-- **Any manual console step is a bug.** If `make up` can't create it, it doesn't exist.
+**Any manual console step is a bug.** If a `make` target cannot create it, it
+does not exist.
 
-Terraform state lives in S3 *inside the sandbox account*. Losing state is
-normally a disaster; here the loss is **atomic with the resources**, so state
-and reality stay consistent (both empty). This looks wrong at first glance —
-it isn't.
+**Durability comes from somewhere else.** On the Kafka path, Unity Catalog
+managed Delta in the permanent Databricks account is the system of record. On the
+AWS-native path, nothing persists and durability means re-derivation from public
+archives.
 
-## The AWS-native workstream
+Terraform state lives in S3 inside the sandbox account. Losing state is normally
+a disaster. Here the loss is atomic with the resources, so state and reality stay
+consistent, both empty.
 
-A second implementation of the same use case on AWS-managed services —
-Fargate → Kinesis → Firehose → Parquet on S3, queried with Athena. Shares
-`ingest/`, `config/universe.yaml`, and `ingest/schemas/trade.v1.avsc` with the
-Kafka/Databricks path and diverges below the sink.
+## Stack A: Kafka and Databricks
 
-Above Bronze, one Step Functions state machine runs the whole medallion every
-five minutes: Bronze → `silver_trades` (keyed upsert) and
-`silver_trades_quarantine` (violations, never dropped) in parallel, then
-`gold_bars_1m` rebuilt for only the partitions that moved. Silver and Gold are
-Iceberg on plain S3; every transform is an Athena statement, so there is no code
-deployed above the producer.
+```bash
+make up        # empty AWS account to streaming data. Budget 45-60 minutes
+make down      # destroy the sandbox. Databricks is untouched
+make rebuild   # both, in order
+make unlock    # recovery when a bootstrap dies midway and Kafka denies every client
+```
 
-Design: [`docs/superpowers/specs/2026-08-14-aws-native-workstream-design.md`](docs/superpowers/specs/2026-08-14-aws-native-workstream-design.md)
-Run guides: [N0–N1](docs/superpowers/plans/2026-08-14-aws-native-n0-n1.md) · [N2–N3](docs/superpowers/plans/2026-08-16-aws-native-n2-n3.md)
-What N2–N3 added: [`docs/AWS_NATIVE_N2_N3_CHANGES.md`](docs/AWS_NATIVE_N2_N3_CHANGES.md)
+`make up` takes 45 to 60 minutes because MSK requires three serial operations:
+create the cluster, configure the ACLs, then enable public access, in that order.
+[`docs/SETUP.md`](docs/SETUP.md) §5f explains why the order is fixed.
+
+Records on the wire are bare Avro datums with no registry and no magic byte. The
+schema version travels in a Kafka header. The producer and the Spark reader load
+the same `.avsc` from `ingest/schemas/`, so drift is impossible by construction.
+
+Above Bronze, a Lakeflow pipeline writes `bronze_trades_stream`, `silver_trades`
+(keyed upsert on `(venue, trade_id)`), and `silver_trades_quarantine`. It is
+triggered rather than continuous. Deploy and validate it with
+[`docs/RUNBOOK_STAGE_2A.md`](docs/RUNBOOK_STAGE_2A.md).
+
+```bash
+make pipeline-validate   # offline
+make pipeline-deploy     # push the bundle
+make pipeline-run        # one triggered update
+make pipeline-status
+```
+
+## Stack B: AWS-native
+
+Fargate to Kinesis to Firehose to Parquet on S3, queried with Athena. Shares
+`ingest/`, `config/universe.yaml`, and `ingest/schemas/trade.v1.avsc` with Stack A
+and diverges below the sink.
 
 ```bash
 make preflight-aws   # prove the account permits every service this needs
 make up-aws          # empty account to trades in Bronze, a few minutes
-make ddl-aws         # create the Iceberg tables (also run by up-aws)
+make ddl-aws         # create the Iceberg tables (up-aws runs this too)
 make microbatch-aws  # run one Bronze -> Silver -> Gold cycle now
 make verify-aws      # the acceptance queries, with bytes scanned
+make enrich-aws      # run both enrichment collectors now
+make dashboard-aws   # build the static dashboard
 make logs-aws        # follow the producer
 make sfn-logs-aws    # follow the micro-batch
 make down-aws        # destroy it; the Kafka stack is untouched
 ```
 
-Both stacks can be up at once: separate VPCs, separate Terraform state keys in
-the same bucket, and a `fdai-native-*` naming prefix. Verify the data with
-[`awsnative/sql/verify_bronze.sql`](awsnative/sql/verify_bronze.sql) and
-[`awsnative/sql/verify_silver_gold.sql`](awsnative/sql/verify_silver_gold.sql).
+One Step Functions state machine runs the whole medallion every five minutes:
+Silver and quarantine in parallel from the same Bronze window, then Gold rebuilt
+for only the partitions that moved. Silver and Gold are Iceberg on plain S3 and
+every transform is an Athena statement, so no code deploys above the producer.
 
-Stages N4–N6 (backfill, point-in-time serving, agent) are designed but not yet
-built — see §12 of the design. Because durability here is re-derivation, **N4 is
-what makes the weekly wipe survivable**: until it lands, Silver and Gold hold
-only what has streamed in since the last `make up-aws`.
+Two scheduled Lambdas add context: perpetual-futures funding and positioning
+every five minutes, and six vintage-stamped macro series daily.
+
+Both stacks can be up at once. Separate VPCs, separate Terraform state keys in
+the same bucket, and an `fdai-native-` naming prefix.
+
+Stages N4 (backfill), N5 (point-in-time serving), and N6 (agent) are designed and
+unbuilt. Because durability here means re-derivation, **N4 is what makes the
+weekly wipe survivable.** Until it lands, Silver and Gold hold only what has
+streamed in since the last `make up-aws`.
 
 ## Prerequisites
 
-- AWS credentials for the sandbox account (`AWS_PROFILE` or env vars)
-- `terraform` >= 1.9, `uv`, `docker`, `databricks` CLI authenticated to the workspace
-- `cp infra/envs/dev/terraform.tfvars.example infra/envs/dev/terraform.tfvars` and fill in
-  `repo_url` and `kafka_client_cidrs` (the Databricks workspace NAT EIP; your
-  laptop IP is detected automatically)
+- AWS credentials for the sandbox account, through `AWS_PROFILE` or env vars
+- `terraform` >= 1.9, `uv`, `docker`, and the `databricks` CLI authenticated to
+  the workspace
+- Copy each `terraform.tfvars.example` to `terraform.tfvars` and fill it in. For
+  `infra/envs/dev`, set `repo_url` and `kafka_client_cidrs` (the Databricks
+  workspace NAT Elastic IP; your laptop address is detected automatically).
+
+Every variable, with its default and its effect: [`docs/SETUP.md`](docs/SETUP.md) §5.
 
 ## Local development
 
 ```bash
-make compose-up        # single-broker Kafka on localhost:9092 (empty: no topics, no data)
-make check             # lint + typecheck + unit tests
-make test-integration  # end-to-end against the local broker
+make compose-up        # single-broker Kafka on localhost:9092, empty
+make check             # ruff + mypy + unit tests
+make test-integration  # end to end against the local broker
 make compose-down
 ```
 
-To get *data* locally, not just a broker — brings up compose Kafka, creates the
-topics, and runs the Binance + Coinbase producers on the host. Runs in the
-foreground; leave it in its own terminal:
+`make compose-up` gives you a broker with no topics and no data. To get data,
+run the full local stream. It runs in the foreground, so leave it in its own
+terminal:
 
 ```bash
-make stream-local
+make stream-local      # compose Kafka + topics + Binance and Coinbase producers
 ```
 
-The producers run on the host rather than in the `producers` container
-deliberately: see Known limitations for why the container cannot reach the
-broker.
+The producers run on the host rather than in the `producers` container. See
+Known limitations for why the container cannot reach the broker.
 
-Run producers against local Kafka without touching AWS (see Known limitations —
-this currently does not work due to a Docker networking gap):
+**Notebooks.** [`notebooks/`](notebooks/README.md) is the interactive loop:
+stream health and sequence gaps, exploratory analysis over a bounded window, and
+a pandas prototype of the Silver and Gold transforms with the PySpark each maps
+to. Jupyter and pandas sit in an opt-in dependency group, so they never reach
+`make check` or the producer image.
 
 ```bash
-docker compose -f docker/compose.yaml --profile live up --build
+make stream-local            # in one terminal
+make notebook TARGET=local   # in another
 ```
 
-## Topics
-
-| Topic | Partitions | Retention |
-|---|---|---|
-| `md.trades.v1` | 6 | 24h |
-| `md.book.top.v1` | 6 | 6h |
-| `md.book.depth.v1` | 6 | 2h (off by default) |
-| `md.bars.v1` | 3 | 48h |
-| `news.articles.v1` | 3 | 7d |
-| `ops.metrics.v1` | 1 | 7d |
-
-Records are bare Avro datums (no registry, no magic byte) with the schema
-version in a Kafka header. Producer and Spark reader load the same `.avsc` from
-`ingest/schemas/`, so drift is impossible by construction.
-
-## Consuming trade data
-
-After `make up` (or `make compose-up` locally), trades are flowing but nothing
-is yet reading them into a lakehouse — Stage 2 (Databricks Bronze/Silver/Gold)
-is designed, not implemented (see
-[`docs/superpowers/specs/2026-08-08-data-layer-batch-history-and-serving-design.md`](docs/superpowers/specs/2026-08-08-data-layer-batch-history-and-serving-design.md)).
-Three ways to consume in the meantime:
-
-**Local dev notebooks** ([`notebooks/`](notebooks/README.md)) — the interactive
-loop: stream health and sequence gaps, exploratory analysis over a bounded
-window, and a pandas prototype of the Silver dedupe/bars transforms with the
-PySpark each maps to. Backed by [`devlab/`](devlab), a small helper library
-that resolves either broker from one env var. Jupyter and pandas live in an
-opt-in dependency group, so they never reach `make check` or the producer image.
-
-```bash
-make stream-local   # in one terminal
-make notebook TARGET=local  # in another
-```
-
-For an existing MSK deployment, one command validates/refreshes SSO, updates
-the current laptop `/32` through Terraform, verifies Kafka access, and launches
-Jupyter with the live Terraform target:
+Against a live MSK deployment, one command refreshes SSO, updates your current
+`/32` through Terraform, verifies Kafka access, and launches Jupyter:
 
 ```bash
 make notebook TARGET=msk
 ```
 
-**Ad-hoc local consumer** — decodes the same bare Avro the producer writes and
-computes a rolling per-instrument VWAP:
+**Ad-hoc consumer.** Decodes the same bare Avro the producer writes and computes
+a rolling per-instrument VWAP:
 
 ```bash
 uv run python -m scripts.consume_example \
@@ -154,37 +156,41 @@ uv run python -m scripts.consume_example \
   --password  "$(terraform -chdir=infra/envs/dev output -raw sasl_password)"
 ```
 
-(or `--bootstrap localhost:9092` with no credentials against `make compose-up`).
+Use `--bootstrap localhost:9092` with no credentials against `make compose-up`.
 
-**Databricks Structured Streaming** (the intended production path once Stage 2
-ships) — read the Kafka topic with `spark.readStream.format("kafka")`
-authenticated via `kafkashaded.org.apache.kafka.common.security.scram...`
-JAAS config sourced from the `${PROJECT}` secret scope (published by `make up`),
-decode with `pyspark.sql.avro.functions.from_avro(col("value"), open("ingest/schemas/trade.v1.avsc").read())`
-since there's no registry, then transform/aggregate as usual — e.g. a windowed
-`groupBy(window("event_ts", "1 minute"), "instrument_id")` for 1-minute bars.
+## Kafka topics
+
+| Topic | Partitions | Retention | Populated |
+|---|---|---|---|
+| `md.trades.v1` | 6 | 24h | yes |
+| `md.book.top.v1` | 6 | 6h | no producer code |
+| `md.book.depth.v1` | 6 | 2h (off by default) | no producer code |
+| `md.bars.v1` | 3 | 48h | no producer code |
+| `news.articles.v1` | 3 | 7d | no producer code |
+| `ops.metrics.v1` | 1 | 7d | no producer code |
+
+Why these numbers, and what a partition or a retention setting does:
+[`docs/KAFKA_EXPLAINED.md`](docs/KAFKA_EXPLAINED.md).
 
 ## Known limitations
 
-- **Teardown loses in-flight Kafka data by design.** `make down` destroys the
-  brokers; anything not yet consumed into Bronze is gone. Backfill re-derives it
-  from public archives and the reconciliation job proves it converged.
+- **Teardown loses in-flight data by design.** `make down` destroys the brokers,
+  and anything not yet read into Bronze is gone. Backfill re-derives it from
+  public archives, and the reconciliation job proves it converged. Neither has
+  been built yet on the AWS-native side.
 - **Binance gets exact-range gap repair; Coinbase gets best-effort.** Coinbase's
   public market-data API has no id-range query, so repair refetches recent
-  trades and relies on natural-key dedupe. Not every venue supports the same
-  repair, and hiding that would be worse than documenting it.
-- **Equity coverage is IEX-only (~2% of volume)** on Alpaca's free tier. Crypto
-  carries the real streaming workload.
-- **`docker compose --profile live` cannot deliver messages to the local broker.**
-  The Kafka container advertises the host loopback address, which points to
-  the `producers` container itself rather than the broker when run from inside a
-  sibling container — a known Kafka-in-Docker single-listener limitation.
-  Producers work correctly against a real MSK cluster (the actual deployment
-  target) and the integration tests (which connect from the host, not from
-  inside another container). Fixing this locally would need a second,
-  container-internal listener; tracked as a follow-up, not yet implemented.
-- **DLQ topics are provisioned but not yet written to.** `_dlq.*` topics exist
-  per the design spec's dead-letter contract, but no connector or runner code
-  publishes to them yet — an unparseable frame currently propagates as an
-  exception, causing the WebSocket session to reconnect rather than being
-  routed to the DLQ. Tracked as follow-up work for a later stage.
+  trades and relies on natural-key dedupe.
+- **Equity coverage is IEX-only**, roughly 2% of volume, on Alpaca's free tier.
+  Crypto carries the streaming workload.
+- **`docker compose --profile live` cannot deliver to the local broker.** The
+  Kafka container advertises the host loopback address, which from inside a
+  sibling container points at the `producers` container rather than the broker.
+  Producers work against real MSK and in the integration tests, which connect
+  from the host. Fixing it locally needs a second container-internal listener.
+- **DLQ topics are provisioned but never written to.** The `_dlq.*` topics exist
+  per the design's dead-letter contract, but no code publishes to them. An
+  unparseable frame raises an exception and the WebSocket session reconnects.
+
+The full built-versus-designed gap list is
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §5.

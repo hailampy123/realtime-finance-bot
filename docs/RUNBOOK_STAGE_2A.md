@@ -1,7 +1,6 @@
-# Runbook — Stage 2a Bronze + Silver Pipeline
+# Runbook: Stage 2a Bronze and Silver pipeline
 
-How to reproduce every part of stage 2a from nothing, ad hoc. Design rationale
-lives in
+How to reproduce every part of stage 2a from nothing. Design rationale lives in
 [`docs/superpowers/specs/2026-08-12-stage-2a-bronze-silver-pipeline-design.md`](superpowers/specs/2026-08-12-stage-2a-bronze-silver-pipeline-design.md);
 this file is only the commands and the order to run them in.
 
@@ -15,15 +14,15 @@ Three tables in Unity Catalog, owned by one Lakeflow Declarative Pipeline:
 | `fdai.market.silver_trades` | Deduplicated trade facts, keyed upsert on `(venue, trade_id)`, Change Data Feed on. |
 | `fdai.market.silver_trades_quarantine` | Every rejected record, with the reason and the raw bytes. |
 
-**Nothing has read from Kafka yet.** The pipeline is deployable and fully tested
-offline, but a live run is blocked on §6.
+**Nothing has read from Kafka yet.** The pipeline deploys and passes its offline
+tests. A live run stays blocked on §6.
 
 ## 2. Prerequisites
 
 | Tool | Version | Notes |
 |---|---|---|
 | `uv` | any recent | `brew install uv` |
-| Databricks CLI | >= v0.292.0 | verified against v1.11.0 — `brew install databricks/tap/databricks` |
+| Databricks CLI | >= v0.292.0 | verified against v1.11.0. `brew install databricks/tap/databricks` |
 | JDK 17 | any 17.x | `brew install openjdk@17`, **local tests only** |
 
 Homebrew does not link `openjdk@17` onto `PATH`, so `java -version` will still
@@ -46,7 +45,7 @@ Expect **45 passed**. The first run also downloads `spark-avro_2.12:3.5.3` from
 Maven into `~/.ivy2`; every run after that is fully offline.
 
 Without `--group lakehouse` the pyspark-dependent modules skip rather than
-error, so `make test` still works — it just covers less.
+error, so `make test` still passes and covers less.
 
 Everything else:
 
@@ -56,7 +55,7 @@ make typecheck     # mypy, strict
 make test          # whole suite
 ```
 
-`make typecheck` exempts `lakehouse/pipelines/*` — those files import
+`make typecheck` exempts `lakehouse/pipelines/*`, because those files import
 `pyspark.pipelines` and the `dbutils` global, which exist only on Databricks
 Runtime. A test asserts they stay logic-free so the exemption cannot hide a bug.
 
@@ -74,8 +73,8 @@ databricks secrets create-scope fdai --profile tw
 Creating a catalog needs `CREATE_CATALOG` on the metastore. Workspace-admin
 membership was sufficient here even though the explicit grant list did not name
 the user. If it is refused, use a schema inside a catalog you already own and
-change `catalog:`/`schema:` in `resources/trades.pipeline.yml` — nothing else in
-the design depends on the names.
+change `catalog:` and `schema:` in `resources/trades.pipeline.yml`. Nothing else
+in the design depends on the names.
 
 The pipeline reads three secrets from the `fdai` scope:
 
@@ -98,29 +97,29 @@ make pipeline-status      # bundle summary, includes the pipeline URL
 ```
 
 Deploy syncs the whole repo except `notebooks/`, `graphify-out/`, `infra/`,
-`docker/` and `.venv/`. `ingest/schemas/trade.v1.avsc` **must** be synced — the
-pipeline reads that exact file at runtime, which is what stops the consumer's
-schema drifting from the producer's. Verify:
+`docker/` and `.venv/`. `ingest/schemas/trade.v1.avsc` **must** be synced. The
+pipeline reads that exact file at runtime, which is what keeps the consumer's
+schema from drifting away from the producer's. Verify:
 
 ```bash
 databricks workspace list \
   /Workspace/Users/<you>/.bundle/finance-data-ai/dev/files/ingest/schemas --profile tw
 ```
 
-Trigger a run with `make pipeline-run` (it deploys first — code changes have no
-effect until deployed).
+Trigger a run with `make pipeline-run`. It deploys first, because a code change
+has no effect until you deploy it.
 
 Classic compute has no warm pool in this workspace, so the first update can sit
-in `WAITING_FOR_RESOURCES` for 10–20 minutes while a cluster is provisioned.
-That is normal; do not cancel it. Poll the **update**, not the pipeline:
+in `WAITING_FOR_RESOURCES` for 10 to 20 minutes while AWS provisions a cluster.
+That is normal. Do not cancel it. Poll the **update**, not the pipeline:
 
 ```bash
 databricks pipelines get-update <pipeline-id> <update-id> --profile tw
 databricks pipelines list-pipeline-events <pipeline-id> --profile tw
 ```
 
-When an update fails, the useful text is at `error.exceptions[0].message` — the
-top-level `message` only ever says "Update X is FAILED".
+When an update fails, read `error.exceptions[0].message`. The top-level
+`message` only ever says "Update X is FAILED".
 
 ## 5a. Findings from getting this running the first time
 
@@ -134,30 +133,27 @@ code; full detail is in design doc §11.2.
    pipeline source does not put the bundle root on `sys.path`. Fixed: the
    pipeline resource sets `root_path: ${workspace.file_path}`.
 3. **`UNRESOLVED_COLUMN` on `_kafka_value` inside `cdc_trades_stream`.**
-   `except_column_list` must resolve every name against the CDC flow's source —
-   but `trades_clean` (via `transforms.valid_trades`) already projects those
-   columns away, so there was nothing left to resolve. Fixed: the flow no
-   longer declares `except_column_list`; the exclusion is enforced solely by
-   the projection.
+   `except_column_list` must resolve every name against the CDC flow's source,
+   and `trades_clean` (through `transforms.valid_trades`) already projects those
+   columns away, so nothing was left to resolve. Fixed: the flow no longer
+   declares `except_column_list`, and the projection alone enforces the
+   exclusion.
 4. **`bronze_trades_stream` reaches `RUNNING`, then
    `kafkashaded...TimeoutException: Timed out waiting for a node assignment`.**
-   This is §6's NAT EIP gap, not a bug — the classic cluster's egress IP is not
-   in `kafka_client_cidrs`. Confirms every layer above the network (cluster,
-   import, CDC resolution, dataflow graph) now works on the live workspace.
+   This is §6's NAT Elastic IP gap rather than a bug: the classic cluster's
+   egress address is not in `kafka_client_cidrs`. It confirms that every layer
+   above the network works on the live workspace, including the cluster, the
+   import, the CDC resolution, and the dataflow graph.
 
-Two operational notes that keep coming up:
+One operational note beyond the polling commands in §5. A classic cluster
+cold-starts in 10 to 20 minutes here, and a failed update can leave the cluster
+`RUNNING` while the pipeline itself reads `IDLE`. Check for it and terminate it,
+or it bills until autotermination:
 
-- Poll the **update**, not the pipeline — `databricks pipelines get-update
-  <pipeline-id> <update-id> --profile tw`. When it fails, the useful text is
-  `error.exceptions[0].message`; the top-level `message` only ever says
-  "Update X is FAILED".
-- A classic cluster cold-starts in 10–20 minutes here, and a failed update can
-  leave the cluster `RUNNING` while the pipeline itself reads `IDLE`. Check and
-  terminate it, or it bills until autotermination:
-  ```bash
-  databricks clusters list --profile tw | grep dlt-execution
-  databricks clusters delete <cluster-id> --profile tw
-  ```
+```bash
+databricks clusters list --profile tw | grep dlt-execution
+databricks clusters delete <cluster-id> --profile tw
+```
 
 ## 6. What still blocks a live run
 
@@ -172,13 +168,13 @@ deploys and validates but cannot read a single record.
    cross-Pacific round trip and cross-region egress charges on every trade.
 2. **Find the workspace NAT egress IP.** It cannot be read from the Databricks
    side, because the workspace VPC lives in a ThoughtWorks-managed AWS account.
-   Get it empirically: run a throwaway notebook on a **classic** cluster in this
-   workspace and call an IP-echo service (`curl -s https://checkip.amazonaws.com`).
-   Whatever it prints is the `/32` MSK will see. It must be a classic cluster —
-   serverless egresses from different, rotating addresses.
+   Measure it: run a throwaway notebook on a **classic** cluster in this
+   workspace and call an IP-echo service, `curl -s https://checkip.amazonaws.com`.
+   Whatever it prints is the `/32` MSK will see. Use a classic cluster.
+   Serverless egresses from different addresses that rotate.
 3. **Allowlist that `/32`.** Put it in `infra/envs/dev/terraform.tfvars` as
-   `kafka_client_cidrs = ["<ip>/32"]` — it is currently `[]`, which is why
-   Databricks has never reached MSK — then re-run `make up`.
+   `kafka_client_cidrs = ["<ip>/32"]`, then re-run `make up`. The list is
+   currently `[]`, which is why Databricks has never reached MSK.
 
 ## 7. After the weekly sandbox wipe
 
@@ -191,11 +187,11 @@ make pipeline-refresh-bronze
 ```
 
 **Never run a whole-pipeline full refresh.** It would also full-refresh
-`silver_trades`, destroying accumulated history whose source data the wipe has
-already deleted — unrecoverable. Refreshing Bronze alone is safe because
-`silver_trades` is a keyed upsert: replaying Bronze re-upserts the same
-`(venue, trade_id)` keys and converges instead of duplicating. There is
-deliberately no Makefile target for the destructive form.
+`silver_trades` and destroy accumulated history whose source data the wipe
+already deleted. That loss is unrecoverable. Refreshing Bronze alone is safe
+because `silver_trades` is a keyed upsert: replaying Bronze re-upserts the same
+`(venue, trade_id)` keys and converges rather than duplicating. No Makefile
+target exists for the destructive form, by design.
 
 The `/32` from §6 also changes whenever the workspace NAT EIP changes, and your
 own IP is re-detected by `scripts/bootstrap.sh` on every run.
@@ -229,11 +225,10 @@ GROUP BY venue, trade_id
 HAVING distinct_event_ts > 1 OR distinct_price > 1 OR distinct_size > 1;
 ```
 
-A quarantine rate of exactly 0% across a large batch deserves suspicion rather
-than satisfaction — it more often means the branch is not wired than that the
-data is perfect. Confirm the reason breakdown is empty *and* that
-`bronze_trades_stream` and `silver_trades` row counts differ by exactly the
-quarantine count.
+Treat a quarantine rate of exactly 0% across a large batch as a defect until you
+prove otherwise. It usually means the quarantine branch never ran. Confirm that
+the reason breakdown is empty **and** that the `bronze_trades_stream` and
+`silver_trades` row counts differ by exactly the quarantine count.
 
 ## 9. Teardown
 
@@ -242,7 +237,7 @@ databricks bundle destroy -t dev --profile tw
 ```
 
 This removes the pipeline and the synced files. It does **not** drop
-`fdai.market` or its tables — dropping data is deliberately manual:
+`fdai.market` or its tables. Dropping data stays manual, by design:
 
 ```sql
 DROP TABLE IF EXISTS fdai.market.silver_trades;

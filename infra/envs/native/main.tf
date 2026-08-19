@@ -67,3 +67,18 @@ module "producer" {
   stream_arn        = module.stream.stream_arn
   stream_name       = module.stream.stream_name
 }
+
+# Slices E1 and E3. Two scheduled Lambdas, no stream and no secret -- see the
+# module header for why each of those is absent rather than forgotten.
+module "enrichment" {
+  source           = "../../modules/native_enrichment"
+  project          = var.project
+  region           = var.region
+  account_id       = data.aws_caller_identity.current.account_id
+  lake_bucket_name = module.lakehouse.bucket_name
+  lake_bucket_arn  = module.lakehouse.bucket_arn
+  source_dir       = abspath("${path.root}/../../..")
+
+  instrument_pairs  = var.enrichment_instrument_pairs
+  schedules_enabled = var.enrichment_enabled
+}

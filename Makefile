@@ -227,3 +227,36 @@ verify-aws:
 
 sfn-logs-aws:
 	aws logs tail "$$(terraform -chdir=$(NATIVE) output -raw microbatch_log_group)" --follow
+
+# --- enrichment (E1 derivatives + E3 macro) and the dashboard ---------------
+
+# Run both collectors once, now, regardless of the schedule. This is how to see
+# a poll's output and its request count before arming anything.
+enrich-aws:
+	@BUCKET="$(TF_BUCKET)"; \
+	PERP=$$(terraform -chdir=$(NATIVE) output -raw enrichment_perp_function); \
+	MACRO=$$(terraform -chdir=$(NATIVE) output -raw enrichment_macro_function); \
+	PAIRS=$$(uv run --group awsnative python -c "import json;from awsnative.backfill.seed import instrument_pairs;from pathlib import Path;print(json.dumps([list(p) for p in instrument_pairs(Path('config/universe.yaml'))]))"); \
+	echo "==> $$PERP"; \
+	aws lambda invoke --function-name "$$PERP" \
+	  --cli-binary-format raw-in-base64-out \
+	  --payload "{\"bucket\":\"$$BUCKET\",\"pairs\":$$PAIRS}" /dev/stdout | head -2; \
+	echo "==> $$MACRO"; \
+	aws lambda invoke --function-name "$$MACRO" \
+	  --cli-binary-format raw-in-base64-out \
+	  --payload "{\"bucket\":\"$$BUCKET\",\"since\":\"2023-01-01\"}" /dev/stdout | head -2
+
+enrich-logs-aws:
+	aws logs tail "$$(terraform -chdir=$(NATIVE) output -raw enrichment_perp_log_group)" --follow
+
+# Build the static dashboard. Self-contained: it opens from file:// with no
+# network, which is what "show me it worked" has to mean when the account is
+# wiped every seven days.
+DASHBOARD_INSTRUMENT ?= BTC-USD
+DASHBOARD_OUT ?= dashboard.html
+
+dashboard-aws:
+	uv run --group awsnative python -m awsnative.dashboard \
+	  --database "$(TF_DB)" --workgroup "$(TF_WG)" \
+	  --instrument "$(DASHBOARD_INSTRUMENT)" --out "$(DASHBOARD_OUT)"
+	@echo "open $(DASHBOARD_OUT)"

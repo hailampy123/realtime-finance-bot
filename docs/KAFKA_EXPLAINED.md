@@ -1,8 +1,8 @@
-# Kafka, Explained Through This Project
+# Kafka, explained through this project
 
-Written for someone new to Kafka. Every setting shown here is one this repo
-actually uses — file and line cited — so you're learning your own system rather
-than a tutorial's.
+Written for someone new to Kafka. Every setting shown here is one this repo uses,
+with the file and line cited, so you read your own system rather than a
+tutorial's.
 
 Companions: [`MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md) (the deploy sequence) ·
 [`AWS_SERVICES_EXPLAINED.md`](AWS_SERVICES_EXPLAINED.md) (the AWS services)
@@ -15,8 +15,8 @@ Companions: [`MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md) (the deploy sequence)
 
 A queue is destructive: you pop a message, it's gone. Kafka isn't. A message is
 appended to a file, sits there for a fixed **retention period**, and *any number
-of independent readers* can read it — each tracking its own position. Reading
-doesn't consume.
+of independent readers* can read it, and each one tracks its own position. A read
+does not consume.
 
 ```text
 md.trades.v1  ──►  [msg][msg][msg][msg][msg][msg]  ──► (new writes append here)
@@ -45,7 +45,7 @@ A **topic** is a named log. Yours, from
 
 | Topic | Partitions | Retention | Actually receives data? |
 |---|---|---|---|
-| `md.trades.v1` | 6 | 24 h | **Yes** — the only one |
+| `md.trades.v1` | 6 | 24 h | **Yes**, the only one |
 | `md.book.top.v1` | 6 | 6 h | no producer yet |
 | `md.book.depth.v1` | 6 | 2 h | no producer yet |
 | `md.bars.v1` | 3 | 48 h | no producer yet |
@@ -53,8 +53,8 @@ A **topic** is a named log. Yours, from
 | `ops.metrics.v1` | 1 | 7 d | no producer yet |
 | `_dlq.*` (5 topics) | 1 each | 7 d | nothing writes them yet |
 
-A **partition** is a shard of a topic — an independent log file. `md.trades.v1`
-has 6, so it's really six logs under one name. Partitions are how Kafka scales:
+A **partition** is a shard of a topic, an independent log file. `md.trades.v1`
+has 6, so it is six logs under one name. Partitions are how Kafka scales:
 six partitions can be written and read in parallel.
 
 An **offset** is a message's position within one partition. Numbering starts at 0
@@ -72,12 +72,12 @@ md.trades.v1
 
 **Ordering is guaranteed within a partition, and nowhere else.** Partition 3's
 offset 5 came after its offset 4. But partition 3 offset 5 versus partition 1
-offset 5 — no guarantee whatsoever. This matters enormously for market data, and
-§3 is how the project handles it.
+offset 5 have no ordering guarantee at all. That matters for market data, and §3
+is how the project handles it.
 
 ---
 
-## 3. Keys — how a message picks its partition
+## 3. Keys: how a message picks its partition
 
 Every Kafka message has an optional **key**. Yours, from
 [`models.py:37-39`](../ingest/core/models.py#L37-L39):
@@ -96,8 +96,9 @@ key "binance|ETHUSDT"  --hash--> always partition 1
 key "coinbase|BTC-USD" --hash--> always partition 5   (different key! different partition)
 ```
 
-The partition numbers above are invented for illustration — the hash decides
-which one, and you'd have to look to find out. What's guaranteed is the *mapping*:
+The partition numbers above are invented for illustration. The hash decides which
+one, and you would have to look to find out. The **mapping** is what Kafka
+guarantees:
 a given key always resolves to the same partition, as long as the partition count
 doesn't change.
 
@@ -118,7 +119,7 @@ arrival order.
 volume than DOGE-USD, so whichever partition it hashes to gets hammered while
 others idle. This is
 *partition skew*, and the design [documents it rather than pre-optimising](superpowers/specs/2026-08-07-finance-data-ai-platform-design.md#L161-L162).
-The fix would be a composite key, at the cost of losing per-instrument ordering —
+The fix would be a composite key, at the cost of per-instrument ordering. That is
 a bad trade at this scale.
 
 If you send a message with **no** key, Kafka round-robins it across partitions and
@@ -126,10 +127,10 @@ you get no ordering guarantee at all.
 
 ---
 
-## 4. Retention — your data has an expiry date
+## 4. Retention: your data has an expiry date
 
-From the table in §2: trades live **24 hours**, then Kafka deletes them. Not when
-read — on a timer, unconditionally.
+From the table in §2: trades live **24 hours**, then Kafka deletes them. Deletion
+runs on a timer, unconditionally, whether or not anything read them.
 
 ```text
 retention.ms = 86400000    (24h, set in create_topics.py)
@@ -140,12 +141,12 @@ This is the single most surprising Kafka behaviour for newcomers, and it's load-
 bearing here: it's exactly why the [data-layer spec](superpowers/specs/2026-08-08-data-layer-batch-history-and-serving-design.md)
 treats Kafka as a transient buffer and re-derives history from public archives.
 
-`compression.type=zstd` is also set per topic — messages are stored compressed,
-which for repetitive JSON-ish records is a large win.
+`compression.type=zstd` is set per topic, so Kafka stores messages compressed.
+For repetitive records the saving is large.
 
 ---
 
-## 5. Producers — writing, and your actual settings
+## 5. Producers: writing, and the settings this repo sets
 
 From [`producer.py:19-29`](../ingest/core/producer.py#L19-L29):
 
@@ -160,32 +161,33 @@ From [`producer.py:19-29`](../ingest/core/producer.py#L19-L29):
 "delivery.timeout.ms": 300_000,
 ```
 
-**`acks="all"`** — how many replicas must confirm a write before it's considered
+**`acks="all"`** sets how many replicas must confirm a write before it counts as
 successful. `0` = fire and forget, `1` = leader only, `all` = every in-sync
 replica. `all` is slowest and safest.
 
-**`enable.idempotence=True`** — the important one. Without it, a network hiccup
-causes a retry, and if the *first* attempt actually succeeded you now have a
+**`enable.idempotence=True`** is the important one. Without it, a network fault
+causes a retry, and when the first attempt already succeeded you get a
 duplicate. Idempotence gives each message a sequence number so the broker
 recognises and discards the retry.
 
 > **The limit worth knowing:** idempotence only dedupes retries *within one
 > producer session*. Restart the producer and the sequence resets, so a
 > restart-time duplicate is still possible. That's why the design *also* dedupes
-> on a natural key (the trade id) downstream — belt and braces, deliberately.
+> on a natural key, the trade id, downstream. Two defences, by design.
 
-**`linger.ms=20` + `batch.size=262144`** — batching. Rather than one network call
-per trade, wait up to 20 ms or until 256 KB accumulates, then send as a batch.
+**`linger.ms=20` and `batch.size=262144`** control batching. Rather than one
+network call per trade, wait up to 20 ms or until 256 KB accumulates, then send
+one batch.
 Trades throughput at ~200-400 msg/s, so this is a big efficiency win for 20 ms of
 latency that doesn't matter in a minutes-to-seconds system.
 
-**`retries=10_000_000` + `delivery.timeout.ms=300_000`** — looks like "retry
-forever," but the timeout is the real bound: retry as much as you can for 5
+**`retries=10_000_000` and `delivery.timeout.ms=300_000`** look like "retry
+forever". The timeout is the real bound: retry as much as you can for 5
 minutes, then fail. The huge retry count just means "the timeout decides, not the
 counter."
 
-**`max.in.flight.requests.per.connection=5`** — how many unacknowledged batches
-can be in flight. Above 1 this would normally risk reordering on retry; with
+**`max.in.flight.requests.per.connection=5`** sets how many unacknowledged
+batches can be in flight. Above 1 this would normally risk reordering on retry; with
 idempotence enabled, librdkafka preserves order anyway, so 5 is safe. (Idempotence
 actually *requires* `acks=all` and in-flight ≤ 5, so these settings are coupled,
 not independently chosen.)
@@ -199,8 +201,8 @@ assigns each partition to exactly one consumer in the group, so work splits
 without duplication. Add a consumer, partitions redistribute. With 6 partitions,
 a 7th consumer in the same group sits idle.
 
-Kafka stores each group's position — its **committed offset** — so a restarting
-consumer resumes rather than restarting from zero. Different groups are fully
+Kafka stores each group's position, the **committed offset**, so a restarting
+consumer resumes instead of starting from zero. Different groups are fully
 independent: two groups read the same messages without interfering.
 
 Your smoke test is a neat illustration
@@ -212,15 +214,15 @@ Your smoke test is a neat illustration
 ```
 
 A **brand-new group id every run** (timestamped), plus `latest`. A new group has
-no committed offset, and `auto.offset.reset` decides what happens then —
-`earliest` would replay everything retained, `latest` starts from now. So the
+no committed offset, so `auto.offset.reset` decides what happens:
+`earliest` replays everything retained, `latest` starts from now. So the
 smoke test asserts *"trades are flowing right now,"* not *"trades exist
 somewhere in the last 24h."* Exactly the right question for a smoke test, and a
 different group id each run means it never inherits a stale position.
 
 ---
 
-## 7. Replication — surviving a broker failure
+## 7. Replication: surviving a broker failure
 
 `replication_factor=2` (default in `create_topics.py`), so each partition exists
 on 2 of your brokers: one **leader** handling all reads and writes, one
@@ -232,8 +234,8 @@ replicas). Lose the leader, a follower is promoted.
 That's the floor for accepting writes. And it interacts with `acks=all` in a way
 worth understanding: `acks=all` means *"all replicas currently in the ISR,"* not
 *"all replicas that exist."* If a broker dies, the ISR shrinks to 1, and
-`acks=all` is then satisfied by a **single** replica — writes keep flowing, with
-weaker durability than the name suggests. That's the intended trade here
+a **single** replica then satisfies `acks=all`. Writes keep flowing, with weaker
+durability than the name suggests. That's the intended trade here
 (availability over strictness on a disposable sandbox), but it's not what
 `acks=all` sounds like it promises.
 
@@ -254,7 +256,7 @@ which leads which partition), then connects **directly to the leader** for each
 partition it needs. You list two so that one being down doesn't stop the initial
 handshake.
 
-MSK generates fresh broker DNS names every time the cluster is created — and this
+MSK generates fresh broker DNS names every time the cluster is created, and this
 account is wiped weekly. That's precisely why
 [`bootstrap.sh`](../scripts/bootstrap.sh) writes the endpoint into a Databricks
 secret scope on every run instead of anyone hardcoding it in a notebook.
@@ -274,7 +276,7 @@ why `bootstrap.sh` tracks `bootstrap_brokers_private` and
 
 ---
 
-## 9. Security — three separate things that get conflated
+## 9. Security: three separate things that get conflated
 
 | Layer | Question | This project |
 |---|---|---|
@@ -283,16 +285,16 @@ why `bootstrap.sh` tracks `bootstrap_brokers_private` and
 | Authorization | what may you do? | **ACLs** |
 
 `security.protocol=SASL_SSL` means both SASL authentication *and* TLS encryption.
-(`SASL_PLAINTEXT` would authenticate but send unencrypted — never use it over the
-internet.)
+`SASL_PLAINTEXT` would authenticate and send unencrypted. Never use it over the
+internet.
 
 **SCRAM** is a challenge-response password scheme: the password isn't sent over
 the wire, even inside TLS. Your username/password live in AWS Secrets Manager and
 are handed to the cluster by `aws_msk_scram_secret_association`.
 
 **ACLs** are per-resource permission rules. Yours, from
-[`create_acls.py`](../scripts/create_acls.py), grant `User:*` — *any
-authenticated principal* — `ALL` operations on topics, groups, the cluster, and
+[`create_acls.py`](../scripts/create_acls.py), grant `User:*`, meaning any
+authenticated principal, `ALL` operations on topics, groups, the cluster, and
 transactional ids. That's deliberately wide: **authentication plus the
 security-group IP allowlist are the access control here**, not per-topic
 authorization. Narrowing it would mean an ACL per new topic and consumer group,
@@ -308,8 +310,8 @@ allow.everyone.if.no.acl.found
 default**: no ACL means no access.
 
 MSK refuses to enable public access unless this is `false`. But flipping it to
-`false` before ACLs exist locks out *every* client — including the one that would
-create the ACLs, since `CreateAcls` itself needs `Alter` on the cluster. A
+`false` before ACLs exist locks out every client, including the one that would
+create the ACLs, because `CreateAcls` itself needs `Alter` on the cluster. A
 cluster tightened too early can't be repaired from any Kafka client; only by
 loosening the broker config again (`make unlock`).
 
@@ -318,12 +320,12 @@ into an EC2 box. Full reasoning: [`SETUP.md`](SETUP.md) §5f.
 
 ---
 
-## 10. Serialization — why `kafka-console-consumer` shows you garbage
+## 10. Serialization: why `kafka-console-consumer` shows you garbage
 
 **Kafka does not care what your messages contain.** Keys and values are opaque
 byte arrays. Structure is entirely your problem.
 
-Most projects solve it with a *schema registry* — a server that hands out schema
+Most projects solve it with a **schema registry**, a server that hands out schema
 ids, with a magic byte prefixed to each message. This project deliberately has
 none ([`codec.py:1-7`](../ingest/core/codec.py#L1-L7)): AWS Glue Schema Registry
 needs IAM that can't be created here, and a self-hosted registry would die in the
@@ -348,18 +350,18 @@ headers=[
 ```
 
 Useful because a consumer can route or filter on a header **without decoding the
-payload** — which is how a Spark reader picks the right schema before parsing.
+payload**, which is how a Spark reader picks the right schema before parsing.
 
 > **Practical consequence:** you cannot read these messages with generic tooling.
 > `kafka-console-consumer` will print binary noise, because it has no idea it's
 > Avro and no schema to apply. To inspect data you need something that loads the
-> `.avsc` — [`scripts/consume_example.py`](../scripts/consume_example.py) or
+> `.avsc`: [`scripts/consume_example.py`](../scripts/consume_example.py) or
 > `scripts/smoke_test.py`. When your messages look like garbage, this is why, and
 > it isn't a bug.
 
 ---
 
-## 11. Backpressure — what happens when Kafka can't keep up
+## 11. Backpressure: what happens when Kafka cannot keep up
 
 Not Kafka itself, but the adjacent decision every producer has to make: exchange
 WebSockets push data at their pace, regardless of whether you can publish it. So
@@ -375,27 +377,27 @@ for when it fills ([`queue.py:24-31`](../ingest/core/queue.py#L24-L31)):
 | `md.book.depth.v1` | DROP_OLDEST | Recoverable from the next snapshot |
 | `ops.metrics.v1` | DROP_OLDEST | Telemetry isn't worth stalling ingestion for |
 
-The asymmetry is the point. Dropping a trade is unrecoverable and silent —
-the one failure this system must not have. Dropping a depth update costs nothing,
+The asymmetry is the point. A dropped trade is unrecoverable and silent, the one
+failure this system must not have. A dropped depth update costs nothing,
 because the next snapshot rebuilds the book.
 
 A **DLQ** (dead-letter queue) is the related idea: a topic for messages that
 couldn't be processed, so a bad message doesn't halt the pipeline or vanish. The
-`_dlq.*` topics exist but nothing writes to them yet — an unparseable frame
-currently causes a WebSocket reconnect instead.
+`_dlq.*` topics exist and nothing writes to them yet. An unparseable frame
+currently causes a WebSocket reconnect.
 
 ---
 
 ## 12. Two behaviours that will confuse you at some point
 
 **A producer against a topic that doesn't exist yet fails for minutes.** Auto-
-creation is off in both environments — MSK defaults to off, and the local Docker
-broker sets `KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"` explicitly — so a topic
-exists only once `create_topics.py` has made it. Meanwhile librdkafka caches topic
+creation is off in both environments. MSK defaults to off, and the local Docker
+broker sets `KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"` explicitly, so a topic
+exists only after `create_topics.py` makes it. Meanwhile librdkafka caches topic
 metadata, refreshing for an *unknown* topic only every few minutes.
 So a producer started before `create_topics.py` keeps failing well after the
-topics appear. That's why `bootstrap.sh` step 8 explicitly restarts the container
-rather than waiting it out — restarting forces a fresh metadata fetch.
+topics appear. That is why `bootstrap.sh` step 8 restarts the container rather
+than waiting it out: a restart forces a fresh metadata fetch.
 
 **A consumer can be perfectly healthy and see nothing.** With
 `auto.offset.reset=latest` and a group that has already committed offsets, you
@@ -419,7 +421,7 @@ to read what's already there.
 | **Consumer group** | Consumers sharing partitions; offsets are committed per group |
 | **Broker** | One Kafka server. You run 2 |
 | **Leader / follower** | Per partition: one broker serves it, others replicate it |
-| **ISR** | In-sync replicas — followers currently caught up |
+| **ISR** | In-sync replicas: the followers currently caught up |
 | **Replication factor** | Copies of each partition. Yours: 2 |
 | **`min.insync.replicas`** | Minimum ISR size to accept writes. Yours: 1 |
 | **Retention** | How long messages live before unconditional deletion |

@@ -5,6 +5,13 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    # Builds the enrichment Lambda zip in-plan. The package is a few kilobytes of
+    # pure standard-library Python, which is the whole reason no build step or
+    # container image is needed here.
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 }
 

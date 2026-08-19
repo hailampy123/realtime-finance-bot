@@ -142,7 +142,7 @@ flowchart TB
 | Firehose delivery stream | land Bronze as Parquet | `native_stream` | no |
 | S3 bucket + Glue database | hold every table | `native_lakehouse` | no — re-derived |
 | Athena workgroup + prepared statements | run every transform and every read | `native_lakehouse` | no |
-| Step Functions ×2 | micro-batch, backfill | `native_orchestration` | no |
+| Step Functions ×2 | micro-batch, backfill | `native_medallion` (micro-batch, built); backfill lands in N4 | no |
 | Lambda ×3 | archive I/O, tool server, snapshot | `native_serving` | no |
 | CloudFront + S3 site | dashboard | `native_serving` | no |
 | Anthropic workspace (Claude Platform on AWS) | the agent | not Terraform — Anthropic-side | **yes** |
@@ -163,6 +163,9 @@ benefit is managed compaction and snapshot expiry. **The weekly wipe neutralises
 table lives long enough to need compacting. The constraint that hurts everywhere else pays
 for itself exactly once, here. (If durability ever moves to a permanent bucket, revisit
 this: the argument evaporates with the wipe.)
+
+> **Narrowed by §14 A7.** The choice of plain S3 over S3 Tables stands. The reason above
+> holds for storage and fails for reads, so the tables do need `OPTIMIZE` and `VACUUM`.
 
 **D3 — There is no Change Data Feed equivalent, and that is a simplification, not a gap.**
 The Databricks design needed CDF because a DLT pipeline and a separate wheel wrote Silver
@@ -688,6 +691,11 @@ one is false is a course correction rather than a redesign.
 
 A1 and A2 are the only two that would reshape the design. The rest degrade locally.
 
+**Settled by stages N0 to N3.** A1, A2 and A7 hold. A5 holds for Kinesis, Firehose, Athena,
+Glue, Step Functions, ECS/Fargate and ECR; CloudFront is still unexercised. A3, A4, A6, A8
+and A9 stay open. A2 turned out to carry one property the assumption did not name, which
+§14's amendment A7 records.
+
 ## 12. Decomposition into build stages
 
 Each stage is independently verifiable and independently demoable, and each ends with
@@ -720,7 +728,9 @@ warns about.
   engine for large occasional jobs, not small frequent ones; it stays the named fallback for
   A2 and A9.
 - **S3 Tables for managed Iceberg.** Its compaction and snapshot-expiry benefits are
-  neutralised by the weekly wipe (D2). Revisit if storage ever becomes permanent.
+  neutralised by the weekly wipe (D2). Revisit if storage ever becomes permanent. **Narrowed
+  by §14 A7:** the rejection stands, but self-managed maintenance is still required, and the
+  second reason is that switching now would migrate three live tables.
 - **Amazon Redshift (native or Spectrum) for Gold.** Redshift earns its keep at BI-scale
   concurrency — many analysts, complex multi-way joins, steady traffic that amortises a
   standing cluster. This workload's actual Gold read pattern is narrow, highly selective
@@ -804,3 +814,32 @@ rather than 24/7, a working session re-scans single-digit gigabytes in total —
 partitioning would save nothing at that duty cycle and would cost a rewrite of live N1
 infrastructure. It remains the correct lever the moment this runs continuously, and is
 recorded in the N2/N3 run guide's cost table as such.
+
+**A7 — Iceberg tables need maintenance, and D2 narrows to storage only (amends D2 and §13).**
+D2 says the weekly wipe neutralises the benefit of managed compaction and snapshot expiry,
+because no table lives long enough to need either. That claim is correct about **storage**
+and incorrect about **reads**, and the two halves need separate answers.
+
+Read cost tracks the number of commits, not the age of the table. The micro-batch commits
+288 times a day. The wipe resets the clock once a week. Storage never accumulates long
+enough to cost real money, so D2's storage half stands.
+
+The mechanism the design did not name: **Athena writes Iceberg in merge-on-read mode only,
+and the mode cannot be changed.** Athena ignores `write.merge.mode` and always writes
+position delete files. `gold_bars_1m` has a `WHEN MATCHED THEN UPDATE` branch (§5.3), so
+every run adds delete files to the live partitions, and every Gold read applies all of them.
+`silver_trades` inserts only (§5.2), so it accumulates one small data file per partition per
+run. At §10's operating discipline an 8-hour session takes about 96 commits, which puts
+roughly 96 small files in each instrument-day partition and 96 rounds of delete files in
+each Gold partition. No table runs `OPTIMIZE` or `VACUUM` today, so none of Athena's
+default thresholds takes effect.
+
+The practical cost is not the bill. A demo query on `gold_bars_1m` gets slower through a
+session, and the cause reads like a bug in the SQL.
+
+**§13's S3 Tables rejection still stands**, on the storage half of D2 plus one reason D2 did
+not need: switching now would migrate three live tables to a second catalog. The proposed
+answer is Athena `OPTIMIZE` and `VACUUM` inside the existing state machine, which keeps one
+writer and therefore has no conflict window. Full analysis, the four AWS execution surfaces
+compared, and the assumptions to verify:
+[`2026-08-17-iceberg-table-maintenance-design.md`](2026-08-17-iceberg-table-maintenance-design.md).

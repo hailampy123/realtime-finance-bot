@@ -1,4 +1,5 @@
 .omc/
+.codex/
 .terraform/
 *.tfstate
 *.tfstate.*

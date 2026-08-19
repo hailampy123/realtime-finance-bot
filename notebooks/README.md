@@ -8,7 +8,7 @@ package. Five notebooks over one small helper library ([`devlab/`](../devlab)):
 | [`00_stream_health.ipynb`](00_stream_health.ipynb) | Is the stream alive, and is it complete? Topic contents, partition balance, live arrival rate, sequence gaps, consumer lag. |
 | [`01_explore_trades.ipynb`](01_explore_trades.ipynb) | What is actually in the data? A bounded window as a DataFrame, price and volume plots, ingest latency, Binance vs. Coinbase spread. |
 | [`02_prototype_silver.ipynb`](02_prototype_silver.ipynb) | Are the Stage 2 transforms right? Natural-key dedupe and event-time bars in pandas, each with the PySpark it maps to. |
-| [`03_msk_live_experiment.ipynb`](03_msk_live_experiment.ipynb) | A quick, minimal look at the deployed MSK cluster specifically — unlike the others, it calls `devlab.from_terraform()` directly rather than the switchable `devlab.resolve()`, so there's no ambiguity about which broker it's reading. |
+| [`03_msk_live_experiment.ipynb`](03_msk_live_experiment.ipynb) | A minimal look at the deployed MSK cluster. It calls `devlab.from_terraform()` directly rather than the switchable `devlab.resolve()`, so which broker it reads is never ambiguous. |
 | [`04_stream_product_research.ipynb`](04_stream_product_research.ipynb) | What does one selected stream reveal about source quality, latency, activity, volatility, cross-venue structure, and the next Bronze/Silver/Gold data products? |
 
 ## Setup
@@ -32,7 +32,7 @@ make notebook TARGET=msk FDAI_AWS_PROFILE=another-profile
 
 ## Getting data to look at
 
-The notebooks read; something else has to write. Pick a target:
+The notebooks read. Something else has to write. Pick a target:
 
 ### Local (no cloud credentials, no cost)
 
@@ -41,12 +41,12 @@ make stream-local      # leave running in its own terminal
 ```
 
 That brings up the compose broker, creates the topics, and runs the
-Binance + Coinbase producers **on the host**. The host part is not incidental:
-the `producers` compose service cannot reach the broker from inside a sibling
-container, because Kafka advertises the host loopback address and there is
-only one listener (see the README's "Known limitations"). Running the producer
-on the host sidesteps it. `make compose-up` alone gives you an empty broker
-with auto-create disabled — no topics, no data.
+Binance + Coinbase producers **on the host**. The host part matters. The
+`producers` compose service cannot reach the broker from inside a sibling
+container, because Kafka advertises the host loopback address and only one
+listener exists. See the README's "Known limitations". Running the producer on
+the host avoids the problem. `make compose-up` alone gives you an empty broker
+with auto-create disabled, so no topics and no data.
 
 ### MSK
 
@@ -83,19 +83,20 @@ files, or infrastructure.
 
 ## The library
 
-[`devlab/`](../devlab) is deliberately small, and lint/typechecked alongside
+[`devlab/`](../devlab) stays small, and is linted and typechecked alongside
 `ingest`:
 
-- `config` — target resolution and credentials. Passwords are kept out of
-  `repr`, since a bare `target` in a cell echoes its value.
-- `stream` — `tail()` and `collect()`. **Every read is bounded by both a
-  message count and a wall clock**, and at least one must be set. A cell
-  polling a quiet topic forever is indistinguishable from a broken broker, so
-  it is made impossible rather than documented against. Missing topics and
-  unreachable brokers raise immediately with the command to run next.
-- `health` — topic/partition watermarks, live rate, consumer lag, and sequence
-  gaps. Returns dataclasses, not DataFrames, so it works without pandas.
-- `frames` — pandas conversion plus `dedupe()` and `bars()`. Needs the
+- `config`: target resolution and credentials. Passwords stay out of `repr`,
+  since a bare `target` in a cell echoes its value.
+- `stream`: `tail()` and `collect()`. **Every read is bounded by a message
+  count and a wall clock**, and you must set at least one. A cell polling a
+  quiet topic forever looks identical to a broken broker, so `devlab` makes it
+  impossible instead of warning about it. Missing topics and unreachable
+  brokers raise immediately, with the command to run next.
+- `health`: topic and partition watermarks, live rate, consumer lag, and
+  sequence gaps. Returns dataclasses rather than DataFrames, so it works
+  without pandas.
+- `frames`: pandas conversion plus `dedupe()` and `bars()`. Needs the
   `notebook` group.
 
 Decoding goes through the same `trade_codec()` the producer encodes with, so
@@ -103,8 +104,8 @@ there is one schema in play here too.
 
 ## Committing notebooks
 
-Outputs are stripped before commit — they hold real market data and make
-diffs unreadable:
+Strip outputs before you commit. They hold real market data and make diffs
+unreadable:
 
 ```bash
 make notebook-clean    # nbstripout notebooks/*.ipynb
@@ -114,29 +115,29 @@ make notebook-clean    # nbstripout notebooks/*.ipynb
 
 ## Troubleshooting
 
-**`Connect to ipv6#[::1]:9092 failed: Connection refused`** — the local
+**`Connect to ipv6#[::1]:9092 failed: Connection refused`.** The local
 configuration is stale. The repository now uses `127.0.0.1:9092` explicitly;
 recreate Kafka with `make compose-down && make stream-local` so the broker
 advertises the corrected address.
 
 **A read returns nothing.** Check in this order: is `make stream-local` still
 running in its other terminal; does `devlab.topics(target)` show a non-zero
-count for `md.trades.v1`; are you on `offset_reset="latest"` (which only sees
-what arrives *after* the call) when you meant `"earliest"`.
+count for `md.trades.v1`; are you on `offset_reset="latest"` (which sees only
+what arrives after the call) when you meant `"earliest"`.
 
-**`TopicMissing`** — the broker is reachable but the topic is not there.
+**`TopicMissing`.** The broker is reachable but the topic is not there.
 `make compose-up` alone does not create topics and auto-create is off;
 `make stream-local` does.
 
-**`TargetError: AWS credentials are invalid or expired`** — fully stop the
-current Jupyter server and restart through `make notebook TARGET=msk`. The
+**`TargetError: AWS credentials are invalid or expired`.** Stop the current
+Jupyter server completely, then restart through `make notebook TARGET=msk`. The
 preflight removes stale raw credential variables, uses the selected profile,
 opens SSO login when it needs refreshing, and gives the new kernel the same
 clean environment. For a non-SSO profile whose keys really expired, replace
 the keys in that profile and run the same command again.
 
-**`BrokerUnavailable` after changing networks** — fully stop Jupyter and run
-`make notebook TARGET=msk` again. The preflight detects the new public IP and
+**`BrokerUnavailable` after you change networks.** Stop Jupyter completely and
+run `make notebook TARGET=msk` again. The preflight detects the new public IP and
 updates both Terraform-managed operator rules before launching the server.
 
 ## Tests

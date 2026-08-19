@@ -61,3 +61,19 @@ output "microbatch_log_group" {
 output "microbatch_schedule" {
   value = module.medallion.schedule_name
 }
+
+output "enrichment_perp_function" {
+  value = module.enrichment.perp_function_name
+}
+
+output "enrichment_macro_function" {
+  value = module.enrichment.macro_function_name
+}
+
+output "enrichment_perp_log_group" {
+  value = module.enrichment.perp_log_group
+}
+
+output "enrichment_macro_log_group" {
+  value = module.enrichment.macro_log_group
+}

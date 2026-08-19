@@ -1,7 +1,7 @@
-# AWS Services in This Project — A Practical Reference
+# AWS services in this project
 
-Every AWS service this project touches: what it is, why it's here, and the command
-to look at it. Terse on purpose.
+Every AWS service this project touches: what it is, why it is here, and the
+command to look at it. Kept short.
 
 Companions: [`MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md) (the deploy sequence) ·
 [`AWS_DEPLOYMENT_DEBUGGING.md`](AWS_DEPLOYMENT_DEBUGGING.md) (verification and
@@ -68,15 +68,36 @@ flowchart TB
 | **MSK** | Managed Apache Kafka | The message backbone | 1 cluster, 2 brokers |
 | **KMS** | Encryption key management | Encrypts the Kafka secret | 1 key + 1 alias |
 | **Secrets Manager** | Stores secrets, encrypted | Kafka SASL username/password | 1 secret |
-| **IAM** | Identities and permissions | **Deliberately unused** — see §6 | 0 |
+| **IAM** | Identities and permissions | **Unused by design**, see §6 | 0 |
 
 Full cost breakdown is in [`MAKE_UP_EXPLAINED.md`](MAKE_UP_EXPLAINED.md) §8.
+
+### Stack B services, in one line each
+
+The sections below cover Stack A only. Stack B uses a different set, and
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §4 draws how they connect.
+
+| Service | What it is | Used here for |
+|---|---|---|
+| **ECS Fargate** | Containers with no VM to manage | Runs the producer |
+| **ECR** | Private container registry | Holds the producer image |
+| **Kinesis Data Streams** | Managed ordered log, like Kafka | Transport for trades |
+| **Data Firehose** | Managed delivery from a stream to storage | Buffers and writes Parquet |
+| **Glue Data Catalog** | Table metadata store | Schemas for Athena and Iceberg |
+| **Athena** | Serverless SQL over S3 | Every Stack B transform and query |
+| **Step Functions** | State machine that calls services | Runs the micro-batch |
+| **EventBridge Scheduler** | Cron for AWS APIs | Fires the micro-batch and the collectors |
+| **Lambda** | Function with no server | The two enrichment collectors |
+| **Budgets** | Spend threshold and alert | Emails at 80% of the monthly limit |
+
+Stack B does create IAM roles. §6 explains what the sandbox forbids and what it
+allows.
 
 ---
 
 ## 3. Regions, AZs, and accounts
 
-Three levels of "where," and you've already been bitten by the first one.
+Three levels of location. The first one costs the most lost time.
 
 ```text
 AWS
@@ -88,23 +109,24 @@ AWS
 ```
 
 **Region** = a city-sized location. Resources in different regions can't see each
-other privately. Most CLI commands are region-scoped and **silently return
-nothing** if you point them at the wrong one — that's why `--region` matters.
+other privately. Most CLI commands are region-scoped and **return
+nothing, silently**, when you point them at the wrong one. That is why
+`--region` matters.
 
 **Availability Zone (AZ)** = a physically separate datacentre inside a region.
-Spread across 2+ and one failing doesn't take you down. **MSK requires at least
-2**, which is why this project has 2 subnets.
+Spread a service across two or more, and the loss of one does not take it down.
+**MSK requires at least two**, which is why this project has two subnets.
 
 **Account** = a billing and isolation boundary. This project uses two:
 
-| | Account A | Account B |
+| Property | Account A | Account B |
 |---|---|---|
 | Holds | MSK, EC2, VPC, S3 | Databricks workspace |
 | Lifetime | **wiped every 7 days** | permanent |
 | Region | `ap-southeast-1` (default) | `ap-southeast-2` |
 | Your access | full, via `fdai-sandbox` profile | Databricks admin, **no AWS CLI** |
 
-They don't share a region, and that's fine — they talk over the public internet.
+They do not share a region. They talk over the public internet.
 
 ### ARNs
 
@@ -120,13 +142,11 @@ arn:aws:kafka:ap-southeast-1:<account-id>:cluster/fdai-kafka/abc-123
     └── partition (always "aws" for normal use)
 ```
 
-You'll paste these constantly. `terraform output cluster_arn` gives you this one.
+You will paste these often. `terraform output cluster_arn` prints this one.
 
 ---
 
-## 4. Networking — the layer that confuses everyone
-
-Four things stack up, and each one can independently block traffic:
+## 4. Networking: four layers, each able to block traffic
 
 ```text
 ┌─ VPC 10.42.0.0/16 ────────────────────────────────┐
@@ -148,14 +168,14 @@ Four things stack up, and each one can independently block traffic:
 ```
 
 **All four must be right.** A missing route, or a security group with no matching
-rule, and traffic dies with a timeout that names nothing. Debug in this order:
+rule, kills traffic with a timeout that names nothing. Check in this order:
 
 1. Does the SG allow the port from that source IP?
 2. Does the route table send `0.0.0.0/0` to the IGW?
 3. Is the IGW attached to the VPC?
 4. Does the resource have a public IP?
 
-**CIDR notation** — `10.42.0.0/16` means "the first 16 bits are fixed":
+**CIDR notation.** `10.42.0.0/16` means "the first 16 bits are fixed":
 
 | CIDR | Addresses | Meaning |
 |---|---|---|
@@ -163,7 +183,7 @@ rule, and traffic dies with a timeout that names nothing. Debug in this order:
 | `10.42.0.0/24` | 256 | one subnet |
 | `3.105.165.32/32` | **1** | exactly one machine |
 
-`/32` is how you allowlist a single IP — which is what `kafka_client_cidrs` holds.
+A `/32` allowlists a single address, which is what `kafka_client_cidrs` holds.
 
 ### Security groups here
 
@@ -184,18 +204,18 @@ Two properties worth knowing:
 
 ## 5. Service notes worth reading
 
-### MSK — Managed Streaming for Apache Kafka
+### MSK: Managed Streaming for Apache Kafka
 
-Real Kafka; AWS runs the brokers, patching, and replication. You get a
-bootstrap endpoint; you don't get SSH.
+Real Kafka. AWS runs the brokers, the patching, and the replication. You get a
+bootstrap endpoint and no SSH.
 
 - 2 × `kafka.t3.small`, 50 GB EBS each, one per AZ
 - **2 endpoints, different DNS names:** `9096` SASL in-VPC, `9196` SASL public.
-  Plaintext is **disabled** — the cluster sets `client_broker = "TLS"`, so there
-  is no unencrypted port. (The `9092` elsewhere in this repo is the *local Docker*
-  broker, unrelated to MSK.)
-- Broker DNS is **regenerated every time the cluster is created** — hence the
-  Databricks secret scope
+  Plaintext is **disabled**. The cluster sets `client_broker = "TLS"`, so no
+  unencrypted port exists. The `9092` elsewhere in this repo is the local Docker
+  broker, unrelated to MSK.
+- Broker DNS is **regenerated every time the cluster is created**, which is why
+  the Databricks secret scope gets republished on every `make up`
 - Cluster settings come from an `aws_msk_configuration` resource, not from
   arguments on the cluster
 
@@ -204,7 +224,7 @@ aws kafka list-clusters --region ap-southeast-1
 aws kafka get-bootstrap-brokers --region ap-southeast-1 --cluster-arn <arn>
 ```
 
-### KMS + Secrets Manager — the credential chain
+### KMS and Secrets Manager: the credential chain
 
 ```mermaid
 flowchart LR
@@ -214,34 +234,34 @@ flowchart LR
 ```
 
 **Secrets Manager** stores a secret and controls who reads it. **KMS** holds the
-key that encrypts it. Two gotchas, both non-obvious:
+key that encrypts it. Two constraints are easy to miss:
 
 - The secret name **must** start with `AmazonMSK_`. MSK rejects anything else.
-- `recovery_window_in_days = 0` because a deleted secret normally keeps its name
-  reserved for 7–30 days — which would break the next weekly rebuild.
+- `recovery_window_in_days = 0`, because a deleted secret normally keeps its
+  name reserved for 7 to 30 days, which would break the next weekly rebuild.
 
 ```bash
 aws secretsmanager list-secrets --region ap-southeast-1
 aws kms list-aliases --region ap-southeast-1
 ```
 
-### EC2 — and `user_data`
+### EC2 and `user_data`
 
-`user_data` is a script that runs **once, on first boot**, as root. It's how a
-blank VM becomes a configured one with no image-building step: install Docker,
-clone the repo, build, run.
+`user_data` is a script that runs **once, on first boot**, as root. It turns a
+blank VM into a configured one with no image build step: install Docker, clone
+the repo, build, run.
 
-Logs land in `/var/log/cloud-init-output.log` — the **first place to look** when a
-host comes up but doesn't work:
+Logs land in `/var/log/cloud-init-output.log`. Look there **first** when a host
+comes up and does not work:
 
 ```bash
 ssh -i infra/envs/dev/.ssh/fdai-producer.pem ec2-user@<ip> \
   'sudo cat /var/log/cloud-init-output.log'
 ```
 
-### S3 + DynamoDB — why a database for a lock
+### S3 and DynamoDB: why a lock needs a database
 
-S3 alone can't do "check and set" atomically. Two `terraform apply`s could both
+S3 alone cannot do "check and set" atomically. Two `terraform apply`s could both
 read state, both write, and one silently overwrites the other. DynamoDB gives a
 conditional write: first writer creates a lock row, second one waits.
 
@@ -250,41 +270,45 @@ aws s3 ls s3://fdai-tfstate-<account-id>/dev/
 aws dynamodb scan --table-name fdai-tflock --region ap-southeast-1
 ```
 
-A leftover row after a crashed apply is a **stuck lock** — `terraform force-unlock`.
+A leftover row after a crashed apply is a **stuck lock**. Clear it with
+`terraform force-unlock`.
 
 ---
 
-## 6. IAM — the service this project deliberately doesn't use
+## 6. IAM: what Stack A cannot use
 
-**IAM** is how AWS normally answers "who can do what." An **IAM role** is an
-identity a service assumes to get permissions — e.g. an EC2 box with a role can
-call S3 with no credentials on disk.
+**IAM** is how AWS answers "who can do what." An **IAM role** is an identity a
+service assumes to get permissions. An EC2 box with a role can call S3 with no
+credentials on disk.
 
-**This sandbox forbids creating IAM roles.** That single restriction shapes the
-entire architecture:
+**Stack A creates no IAM roles.** That restriction shaped the whole Kafka
+architecture:
 
-| Can't have | Because | What's done instead |
+| Not available | Because | Used instead |
 |---|---|---|
-| Databricks-on-AWS in Account A | Workspace creation needs a cross-account role | Separate permanent account |
-| Instance profile on the EC2 box | That's an IAM role | `iam_instance_profile = null`; **public** git repo so no auth is needed |
-| Lambda, ECS, Firehose | All require service roles | EC2 + Docker |
-| MSK reading its own secret via a role | Role | **Resource policy** (below) |
+| Databricks-on-AWS in Account A | Workspace creation needs a cross-account role | A separate permanent account |
+| Instance profile on the EC2 box | That is an IAM role | `iam_instance_profile = null`, and a **public** git repo so no auth is needed |
+| MSK reading its own secret through a role | A role | A **resource policy**, below |
 
-**Resource policy vs IAM role** — the workaround worth understanding:
+Stack B does create roles for Fargate, Firehose, Step Functions, EventBridge, and
+Lambda, and `make preflight-aws` proves the account permits them before an apply.
+The list above records what Stack A chose to live without.
+
+**Resource policy against IAM role**, the workaround worth understanding:
 
 ```text
 IAM role            :  "this IDENTITY may read that secret"   ← needs role creation
 Resource policy     :  "that SECRET may be read by this service"  ← attached to the secret
 ```
 
-Same outcome, opposite direction, and only the second is permitted here. That's
-`aws_secretsmanager_secret_policy` granting `kafka.amazonaws.com` read access.
+Same outcome, opposite direction. Stack A uses the second form:
+`aws_secretsmanager_secret_policy` grants `kafka.amazonaws.com` read access.
 
 ---
 
 ## 7. Free things you get anyway
 
-| | What | Where |
+| Feature | What | Where |
 |---|---|---|
 | **CloudWatch** | MSK and EC2 metrics, no config needed | Console → CloudWatch → Metrics |
 | **Tags** | Every resource tagged `Project`/`ManagedBy`/`Ephemeral` via `default_tags` | Console → Resource Groups |
@@ -299,7 +323,7 @@ Same outcome, opposite direction, and only the second is permitted here. That's
 aws sts get-caller-identity
 aws configure get region
 
-# what exists (all region-scoped — wrong region = silent empty result)
+# what exists (all region-scoped: wrong region = silent empty result)
 aws ec2 describe-vpcs        --region ap-southeast-1
 aws ec2 describe-instances   --region ap-southeast-1 \
   --query 'Reservations[].Instances[].[InstanceId,State.Name,PublicIpAddress]' --output table
@@ -326,12 +350,12 @@ aws resourcegroupstaggingapi get-resources \
 | Symptom | Cause |
 |---|---|
 | CLI returns **nothing**, no error | Wrong `--region`. Almost always this |
-| `InvalidClientTokenId` | Expired credentials — refresh your sandbox creds |
+| `InvalidClientTokenId` | Expired credentials. Refresh your sandbox credentials |
 | Connection **timeout** to a broker | Security group. A timeout = blocked; a *refused* = reached but nothing listening |
 | Timeout after your Wi-Fi changed | Your public IP moved and the `/32` is stale. `make up` re-detects it |
 | `make down` didn't zero the bill | KMS keys bill through a mandatory 7-day deletion window |
 | Bucket name already taken | S3 names are **globally unique** across all AWS customers |
-| Can't find the NAT Gateway EIP | It's in Account B's VPC, invisible from Databricks' console and API |
+| Cannot find the NAT Gateway Elastic IP | It sits in Account B's VPC, invisible from the Databricks console and API |
 
-**The one rule:** if an AWS CLI command returns empty and you expected data, check
-`--region` before anything else.
+**Check `--region` first.** When an AWS CLI command returns empty and you
+expected data, check the region before anything else.
