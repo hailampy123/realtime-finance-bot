@@ -8,6 +8,7 @@ Start with the question you have, not with a file name.
 | Which commands bring it up? | [`../README.md`](../README.md), then [`SETUP.md`](SETUP.md) |
 | What is built, and what is only designed? | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Where does the data live, and what is one row? | [`DATA_LAYER.md`](DATA_LAYER.md) |
+| When does data actually get written, and how fresh is it? | [`DATA_LAYER.md`](DATA_LAYER.md) §6, §7 |
 | Which file do I change for X? | [`CODEBASE_EXPLAINED.md`](CODEBASE_EXPLAINED.md) |
 | It broke after a deploy. | [`AWS_DEPLOYMENT_DEBUGGING.md`](AWS_DEPLOYMENT_DEBUGGING.md) |
 | What is Kafka / MSK / a security group? | the three primers below |
@@ -29,7 +30,7 @@ disagrees with the code, the document is wrong.
 | Document | Job | Not its job |
 |---|---|---|
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Diagrams of both stacks: what moves data, what runs where, what is built versus designed | Table schemas, install steps |
-| [`DATA_LAYER.md`](DATA_LAYER.md) | Every stored table in both workstreams: location, format, partitioning, grain, key, column contracts | Diagrams, roadmap |
+| [`DATA_LAYER.md`](DATA_LAYER.md) | Every stored table in both workstreams: location, format, partitioning, grain, key, lineage, scheduling, freshness, estimated size | Diagrams, roadmap |
 | [`CODEBASE_EXPLAINED.md`](CODEBASE_EXPLAINED.md) | Directory tour, module boundaries, where a given change belongs | AWS resources, table schemas |
 
 ### 2. Operate: the commands you run
@@ -63,7 +64,7 @@ than in a generic example.
 
 Specs and plans are dated and frozen. They record intent at the time of
 writing. When the implementation diverges, the spec's deviations section records
-it and [`DATA_LAYER.md`](DATA_LAYER.md) §8 summarizes it. Do not read a spec as
+it and [`DATA_LAYER.md`](DATA_LAYER.md) §12 summarizes it. Do not read a spec as
 a description of current state.
 
 ---
