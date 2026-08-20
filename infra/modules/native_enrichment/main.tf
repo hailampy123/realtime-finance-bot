@@ -322,8 +322,13 @@ data "aws_iam_policy_document" "merge_sfn_permissions" {
 
   # Iceberg commits go through Glue, same as native_medallion: a commit is an
   # UpdateTable with optimistic locking on the current metadata pointer.
-  # Scoped to the two tables this role ever touches, narrower than
-  # native_medallion's database-wide grant.
+  # Scoped to the four tables this role actually touches -- two Bronze reads,
+  # two Silver writes -- narrower than native_medallion's database-wide
+  # grant. The original version of this statement listed only the two Silver
+  # write targets and omitted the two Bronze sources these merges read FROM,
+  # which is why bronze_macro_observations returned TABLE_NOT_FOUND to this
+  # role even though the table exists and is readable under any other
+  # identity: found live, 2026-08-20.
   statement {
     sid    = "ReadAndCommitIcebergMetadata"
     effect = "Allow"
@@ -347,9 +352,30 @@ data "aws_iam_policy_document" "merge_sfn_permissions" {
     resources = [
       "arn:aws:glue:${var.region}:${var.account_id}:catalog",
       "arn:aws:glue:${var.region}:${var.account_id}:database/${var.glue_database_name}",
+      "arn:aws:glue:${var.region}:${var.account_id}:table/${var.glue_database_name}/bronze_perp_context",
+      "arn:aws:glue:${var.region}:${var.account_id}:table/${var.glue_database_name}/bronze_macro_observations",
       "arn:aws:glue:${var.region}:${var.account_id}:table/${var.glue_database_name}/silver_perp_context",
       "arn:aws:glue:${var.region}:${var.account_id}:table/${var.glue_database_name}/silver_macro",
     ]
+  }
+
+  # Every Athena query writes a result manifest to the workgroup's output
+  # location before it can report SUCCEEDED, regardless of whether anything
+  # ever reads that manifest back -- the merge state machines never do, but
+  # the write still has to succeed. Missing this produces "Access denied
+  # when writing output" on every query, found live 2026-08-20 after the
+  # Glue fix above got far enough for this to be the next blocker.
+  # _athena-results/ expires on its own lifecycle rule (DATA_LAYER.md
+  # section 3), so nothing here needs DeleteObject.
+  statement {
+    sid    = "WriteAthenaQueryResults"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:AbortMultipartUpload",
+    ]
+    resources = ["${var.lake_bucket_arn}/_athena-results/*"]
   }
 
   # DeleteObject is required and easy to miss: an Iceberg MERGE rewrites data
@@ -372,12 +398,29 @@ data "aws_iam_policy_document" "merge_sfn_permissions" {
     ]
   }
 
-  # ListBucket is a bucket-level action -- it cannot be scoped by object ARN --
-  # so the s3:prefix condition is what keeps it from seeing the rest of the lake.
+  # GetBucketLocation is its own statement, unconditional: Athena calls it to
+  # verify the workgroup's output bucket before running any query, and that
+  # call carries no s3:prefix -- bundled into the conditional statement below,
+  # the condition never matches, the grant never applies, and every query
+  # fails before it starts with "Unable to verify/create output bucket".
+  # GetBucketLocation only reveals the bucket's region, so granting it
+  # unconditionally leaks nothing this role does not already know.
   statement {
-    sid       = "ListOnlyThoseFourPrefixes"
+    sid       = "GetBucketLocationForAthenaOutput"
     effect    = "Allow"
-    actions   = ["s3:ListBucket", "s3:GetBucketLocation"]
+    actions   = ["s3:GetBucketLocation"]
+    resources = [var.lake_bucket_arn]
+  }
+
+  # ListBucket is a bucket-level action -- it cannot be scoped by object ARN --
+  # so the s3:prefix condition is what keeps it from seeing the rest of the
+  # lake. _athena-results included so Athena can list its own output prefix
+  # while verifying/writing the result manifest, same reasoning as
+  # WriteAthenaQueryResults above.
+  statement {
+    sid       = "ListOnlyTheseFivePrefixes"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
     resources = [var.lake_bucket_arn]
     condition {
       test     = "StringLike"
@@ -387,6 +430,7 @@ data "aws_iam_policy_document" "merge_sfn_permissions" {
         "bronze_macro_observations/*",
         "silver_perp_context/*",
         "silver_macro/*",
+        "_athena-results/*",
       ]
     }
   }
