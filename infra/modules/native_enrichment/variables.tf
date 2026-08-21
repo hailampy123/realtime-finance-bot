@@ -102,3 +102,8 @@ variable "query_timeout_seconds" {
   default     = 600
   description = "Per-Athena-statement timeout for both merge state machines."
 }
+
+variable "health_metrics_function_arn" {
+  type        = string
+  description = "ARN of the health-metrics Lambda (native_monitoring module), invoked as a tail state in both merge state machines."
+}

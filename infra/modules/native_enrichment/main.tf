@@ -467,6 +467,13 @@ data "aws_iam_policy_document" "merge_sfn_permissions" {
     resources = [local.merge_perp_arn, local.merge_macro_arn]
   }
 
+  statement {
+    sid       = "InvokeHealthMetricsLambda"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [var.health_metrics_function_arn]
+  }
+
   # Step Functions' logging configuration requires these on "*", same as
   # native_medallion: the delivery is created by the service, not by us, so it
   # cannot be scoped to a log group.
@@ -574,7 +581,7 @@ resource "aws_sfn_state_machine" "merge_perp" {
           StringEquals = "00"
           Next         = "OptimizeSilverPerpContext"
         }]
-        Default = "MaintenanceDone"
+        Default = "CollectHealthMetrics"
       }
 
       OptimizeSilverPerpContext = {
@@ -597,7 +604,7 @@ resource "aws_sfn_state_machine" "merge_perp" {
           StringEquals = "00"
           Next         = "VacuumSilverPerpContext"
         }]
-        Default = "MaintenanceDone"
+        Default = "CollectHealthMetrics"
       }
 
       VacuumSilverPerpContext = {
@@ -610,11 +617,29 @@ resource "aws_sfn_state_machine" "merge_perp" {
         }
         Retry          = local.athena_retry
         TimeoutSeconds = var.query_timeout_seconds
-        Next           = "MaintenanceDone"
+        Next           = "CollectHealthMetrics"
       }
 
-      MaintenanceDone = {
-        Type = "Succeed"
+      # Replaces Plan 1's MaintenanceDone Succeed state.
+      CollectHealthMetrics = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = var.health_metrics_function_arn
+          Payload = {
+            database  = var.glue_database_name
+            workgroup = var.athena_workgroup_name
+            tables    = ["silver_perp_context"]
+          }
+        }
+        Retry = [{
+          ErrorEquals     = ["States.ALL"]
+          IntervalSeconds = 10
+          MaxAttempts     = 2
+          BackoffRate     = 2.0
+        }]
+        TimeoutSeconds = 200
+        End            = true
       }
     }
   })
