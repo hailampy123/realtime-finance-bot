@@ -76,3 +76,8 @@ variable "log_retention_days" {
   type    = number
   default = 7
 }
+
+variable "health_metrics_function_arn" {
+  type        = string
+  description = "ARN of the health-metrics Lambda (native_monitoring module), invoked as this state machine's final tail state."
+}

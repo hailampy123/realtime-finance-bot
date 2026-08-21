@@ -61,6 +61,11 @@ locals {
     silver_trades            = "event_ts >= current_date - interval '${var.lookback_days}' day"
     silver_trades_quarantine = "ingest_date >= date_format(current_date - interval '${var.lookback_days}' day, '%Y-%m-%d')"
     gold_bars_1m             = "window_end_ts >= current_date - interval '${var.lookback_days}' day"
+    # Written by three state machines, so this module is the sole
+    # maintainer of native_health_metrics -- neither merge_perp nor
+    # merge_macro runs OPTIMIZE/VACUUM against it (spec
+    # 2026-08-19-iceberg-housekeeping-monitoring-design.md section 4.3).
+    native_health_metrics = "metric_ts >= current_date - interval '${var.lookback_days}' day"
   }
 
   optimize_sql = {
@@ -170,6 +175,13 @@ data "aws_iam_policy_document" "sfn_permissions" {
     effect    = "Allow"
     actions   = ["states:ListExecutions"]
     resources = [local.state_machine_arn]
+  }
+
+  statement {
+    sid       = "InvokeHealthMetricsLambda"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [var.health_metrics_function_arn]
   }
 
   # Step Functions' logging configuration requires these on "*" -- the delivery
@@ -336,7 +348,7 @@ resource "aws_sfn_state_machine" "microbatch" {
           StringEquals = "00"
           Next         = "OptimizeSilverTrades"
         }]
-        Default = "MaintenanceDone"
+        Default = "CollectHealthMetrics"
       }
 
       OptimizeSilverTrades = {
@@ -375,13 +387,28 @@ resource "aws_sfn_state_machine" "microbatch" {
         }
         Retry          = local.athena_retry
         TimeoutSeconds = var.query_timeout_seconds
+        Next           = "OptimizeNativeHealthMetrics"
+      }
+
+      OptimizeNativeHealthMetrics = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.optimize_sql["native_health_metrics"]
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
         Next           = "IsTopOfDay"
       }
 
       # VACUUM runs daily regardless of which hour triggered OPTIMIZE above:
       # expiry and orphan removal address storage, the slow-moving problem,
       # while OPTIMIZE addresses reads, the fast one (spec 2026-08-17,
-      # section 8.2).
+      # section 8.2). Every path -- whether or not this is the top of the
+      # hour or the day -- converges on CollectHealthMetrics: a tick that
+      # skips maintenance must not also skip reporting on the tables.
       IsTopOfDay = {
         Type = "Choice"
         Choices = [{
@@ -389,7 +416,7 @@ resource "aws_sfn_state_machine" "microbatch" {
           StringEquals = "00"
           Next         = "VacuumSilverTrades"
         }]
-        Default = "MaintenanceDone"
+        Default = "CollectHealthMetrics"
       }
 
       VacuumSilverTrades = {
@@ -428,11 +455,43 @@ resource "aws_sfn_state_machine" "microbatch" {
         }
         Retry          = local.athena_retry
         TimeoutSeconds = var.query_timeout_seconds
-        Next           = "MaintenanceDone"
+        Next           = "VacuumNativeHealthMetrics"
       }
 
-      MaintenanceDone = {
-        Type = "Succeed"
+      VacuumNativeHealthMetrics = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.vacuum_sql["native_health_metrics"]
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        Next           = "CollectHealthMetrics"
+      }
+
+      # Replaces Plan 1's MaintenanceDone Succeed state: every path through
+      # maintenance, run or skipped, ends here. Monitoring section 4.1.
+      CollectHealthMetrics = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = var.health_metrics_function_arn
+          Payload = {
+            database  = var.glue_database_name
+            workgroup = var.athena_workgroup_name
+            tables    = ["silver_trades", "silver_trades_quarantine", "gold_bars_1m"]
+          }
+        }
+        Retry = [{
+          ErrorEquals     = ["States.ALL"]
+          IntervalSeconds = 10
+          MaxAttempts     = 2
+          BackoffRate     = 2.0
+        }]
+        TimeoutSeconds = 200
+        End            = true
       }
     }
   })
