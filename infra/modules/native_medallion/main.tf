@@ -50,6 +50,33 @@ locals {
     MaxAttempts     = 3
     BackoffRate     = 2.0
   }]
+
+  # --- maintenance SQL, spec 2026-08-19 section 3 ---------------------------
+  #
+  # One partition predicate per table, matching each table's own partition
+  # column (spec 2026-08-17 section 8.2). Rendered independently from
+  # awsnative/render.py's maintenance_statements(), which the same two files
+  # feed for tests; scripts/native_render_parity.sh checks the two agree.
+  maintenance_predicates = {
+    silver_trades            = "event_ts >= current_date - interval '${var.lookback_days}' day"
+    silver_trades_quarantine = "ingest_date >= date_format(current_date - interval '${var.lookback_days}' day, '%Y-%m-%d')"
+    gold_bars_1m             = "window_end_ts >= current_date - interval '${var.lookback_days}' day"
+  }
+
+  optimize_sql = {
+    for table, predicate in local.maintenance_predicates : table => templatefile("${var.sql_dir}/optimize_table.sql", {
+      database            = var.glue_database_name
+      table               = table
+      partition_predicate = predicate
+    })
+  }
+
+  vacuum_sql = {
+    for table in keys(local.maintenance_predicates) : table => templatefile("${var.sql_dir}/vacuum_table.sql", {
+      database = var.glue_database_name
+      table    = table
+    })
+  }
 }
 
 # --- the state machine's role ----------------------------------------------
@@ -284,7 +311,128 @@ resource "aws_sfn_state_machine" "microbatch" {
         }
         Retry          = local.athena_retry
         TimeoutSeconds = var.query_timeout_seconds
-        End            = true
+        Next           = "DeriveMaintenanceClock"
+      }
+
+      # Housekeeping tail, spec 2026-08-17 section 8.1: one state machine
+      # stays one writer, so maintenance runs after the merge that owns
+      # these tables rather than on a separate schedule. $$.Execution.StartTime
+      # is the tick this execution was scheduled for, which is what the
+      # minute/hour gates below key off (spec 2026-08-17, assumption M3).
+      DeriveMaintenanceClock = {
+        Type = "Pass"
+        Parameters = {
+          "hour.$"   = "States.ArrayGetItem(States.StringSplit(States.ArrayGetItem(States.StringSplit($$.Execution.StartTime, 'T'), 1), ':'), 0)"
+          "minute.$" = "States.ArrayGetItem(States.StringSplit(States.ArrayGetItem(States.StringSplit($$.Execution.StartTime, 'T'), 1), ':'), 1)"
+        }
+        ResultPath = "$.clock"
+        Next       = "IsTopOfHour"
+      }
+
+      IsTopOfHour = {
+        Type = "Choice"
+        Choices = [{
+          Variable     = "$.clock.minute"
+          StringEquals = "00"
+          Next         = "OptimizeSilverTrades"
+        }]
+        Default = "MaintenanceDone"
+      }
+
+      OptimizeSilverTrades = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.optimize_sql["silver_trades"]
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        Next           = "OptimizeQuarantine"
+      }
+
+      OptimizeQuarantine = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.optimize_sql["silver_trades_quarantine"]
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        Next           = "OptimizeGold"
+      }
+
+      OptimizeGold = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.optimize_sql["gold_bars_1m"]
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        Next           = "IsTopOfDay"
+      }
+
+      # VACUUM runs daily regardless of which hour triggered OPTIMIZE above:
+      # expiry and orphan removal address storage, the slow-moving problem,
+      # while OPTIMIZE addresses reads, the fast one (spec 2026-08-17,
+      # section 8.2).
+      IsTopOfDay = {
+        Type = "Choice"
+        Choices = [{
+          Variable     = "$.clock.hour"
+          StringEquals = "00"
+          Next         = "VacuumSilverTrades"
+        }]
+        Default = "MaintenanceDone"
+      }
+
+      VacuumSilverTrades = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.vacuum_sql["silver_trades"]
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        Next           = "VacuumQuarantine"
+      }
+
+      VacuumQuarantine = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.vacuum_sql["silver_trades_quarantine"]
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        Next           = "VacuumGold"
+      }
+
+      VacuumGold = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.vacuum_sql["gold_bars_1m"]
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        Next           = "MaintenanceDone"
+      }
+
+      MaintenanceDone = {
+        Type = "Succeed"
       }
     }
   })
