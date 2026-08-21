@@ -368,10 +368,6 @@ The design is
   reason covers it.
 - **No point-in-time boundary.** Anything with Athena access can read Gold. See
   §10 on `knowledge_ts_us`.
-- **No table maintenance.** Nothing runs `OPTIMIZE` or `VACUUM`. The
-  insert-only tables accumulate small files and `gold_bars_1m` accumulates
-  merge-on-read delete files on every micro-batch. The symptom shows up first
-  as rising query time.
 - **Nothing here has run in an account.** Every number in the repo comes from a
   real API response or a real archive file, but no deployment has happened. The
   assumptions in each design's X-table stay open until someone runs

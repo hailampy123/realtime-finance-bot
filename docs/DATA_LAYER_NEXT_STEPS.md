@@ -92,14 +92,14 @@ enforces.** The macro work in E3 is exactly the case that needs it. The whole
 argument for storing vintages is that a read path filters on them, and no read
 path does yet. Build this ahead of any new source.
 
-### 3.2 Maintenance, from proposal to running
+### 3.2 Maintenance — running
 
-The maintenance design is written and unimplemented. Three of the four new tables
-in this slice are insert-only, so they accumulate small files exactly as that
-document predicts, and `gold_bars_1m` accumulates merge-on-read delete files on
-every micro-batch. Nothing runs `OPTIMIZE` or `VACUUM` today, so the defaults
-never take effect. The dashboard would show the symptom as a rising query time
-long before anyone diagnosed the cause.
+Implemented: [`2026-08-19-iceberg-maintenance-extension.md`](../superpowers/plans/2026-08-19-iceberg-maintenance-extension.md)
+extends [`2026-08-17-iceberg-table-maintenance-design.md`](../superpowers/specs/2026-08-17-iceberg-table-maintenance-design.md)
+from 3 to 6 tables (adding `silver_perp_context` and `silver_macro`) and runs
+`OPTIMIZE`/`VACUUM` as tail states of the state machines that already write
+each table. `make maintenance-verify-aws` reports current file, delete-file,
+and snapshot counts.
 
 ### 3.3 Comparing the two workstreams on one contract
 
@@ -109,13 +109,16 @@ Delta equivalent from Databricks for the same instrument-minute, then reports th
 difference with coverage, turns that claim into a measurement. It is also the
 cheapest item on this list.
 
-### 3.4 Alerting on the checks that already exist
+### 3.4 Alerting — running
 
-The quarantine rate, the freshness lag, and the reconciliation coverage are all
-computed, and all visible only when somebody opens the dashboard. A CloudWatch
-alarm on two or three of them costs almost nothing. Keep the rule from §6.4:
-alert on discrepancy **and** coverage together, so a check that passed over zero
-comparable rows reads as "no evidence" rather than as "correct".
+Implemented: [`2026-08-20-iceberg-health-metrics-monitoring.md`](../superpowers/plans/2026-08-20-iceberg-health-metrics-monitoring.md)
+publishes freshness, quarantine rate, and file/delete-file/snapshot counts to
+CloudWatch (namespace `FDAI/Native`) from a new tail state in each writer
+state machine, with alarms on freshness, quarantine rate, and stalled
+maintenance, all notifying one SNS topic. History lives in the new
+`native_health_metrics` table, which [`2026-08-19-iceberg-housekeeping-monitoring-design.md`](../superpowers/specs/2026-08-19-iceberg-housekeeping-monitoring-design.md)
+section 5's QuickSight dashboard reads from — that plan has not been written
+yet.
 
 ### 3.5 Feature layer, when there is something to feed
 
