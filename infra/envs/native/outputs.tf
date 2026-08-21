@@ -93,3 +93,11 @@ output "enrichment_merge_perp_log_group" {
 output "enrichment_merge_macro_log_group" {
   value = module.enrichment.merge_macro_log_group
 }
+
+output "alert_topic_arn" {
+  value = module.monitoring.alert_topic_arn
+}
+
+output "health_metrics_function" {
+  value = module.monitoring.health_metrics_function_name
+}

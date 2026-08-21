@@ -13,6 +13,11 @@ variable "budget_notification_email" {
   type        = string
 }
 
+variable "alert_notification_email" {
+  description = "Where CloudWatch alarms for the AWS-native stack send mail."
+  type        = string
+}
+
 variable "monthly_budget_usd" {
   description = "Alarm threshold. Spec section 10 estimates ~$25-35/mo at 30h/week."
   type        = number

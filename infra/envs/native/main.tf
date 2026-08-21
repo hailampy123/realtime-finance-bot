@@ -27,6 +27,27 @@ module "lakehouse" {
   account_id = data.aws_caller_identity.current.account_id
 }
 
+# Spec 2026-08-19-iceberg-housekeeping-monitoring-design.md section 4. Placed
+# ahead of "medallion" and "enrichment" below because both need this
+# module's Lambda ARN to invoke it as a tail state; this module needs
+# nothing from either in return (see native_monitoring/main.tf's comment on
+# why its state-machine ARNs are constructed, not referenced).
+module "monitoring" {
+  source = "../../modules/native_monitoring"
+
+  project    = var.project
+  region     = data.aws_region.current.name
+  account_id = data.aws_caller_identity.current.account_id
+
+  lake_bucket_arn       = module.lakehouse.bucket_arn
+  glue_database_name    = module.lakehouse.glue_database_name
+  athena_workgroup_name = module.lakehouse.athena_workgroup_name
+  source_dir            = abspath("${path.root}/../../..")
+  sql_dir               = abspath("${path.root}/../../../awsnative/sql")
+
+  alert_notification_email = var.alert_notification_email
+}
+
 module "stream" {
   source             = "../../modules/native_stream"
   project            = var.project
@@ -44,9 +65,10 @@ module "medallion" {
   region     = data.aws_region.current.name
   account_id = data.aws_caller_identity.current.account_id
 
-  lake_bucket_arn       = module.lakehouse.bucket_arn
-  glue_database_name    = module.lakehouse.glue_database_name
-  athena_workgroup_name = module.lakehouse.athena_workgroup_name
+  lake_bucket_arn             = module.lakehouse.bucket_arn
+  glue_database_name          = module.lakehouse.glue_database_name
+  athena_workgroup_name       = module.lakehouse.athena_workgroup_name
+  health_metrics_function_arn = module.monitoring.health_metrics_function_arn
 
   # The merge SQL has one home, awsnative/sql, read from here and from
   # awsnative/render.py. path.root is infra/envs/native.
@@ -71,15 +93,16 @@ module "producer" {
 # Slices E1 and E3. Two scheduled Lambdas, no stream and no secret -- see the
 # module header for why each of those is absent rather than forgotten.
 module "enrichment" {
-  source                = "../../modules/native_enrichment"
-  project               = var.project
-  region                = var.region
-  account_id            = data.aws_caller_identity.current.account_id
-  lake_bucket_name      = module.lakehouse.bucket_name
-  lake_bucket_arn       = module.lakehouse.bucket_arn
-  glue_database_name    = module.lakehouse.glue_database_name
-  athena_workgroup_name = module.lakehouse.athena_workgroup_name
-  source_dir            = abspath("${path.root}/../../..")
+  source                      = "../../modules/native_enrichment"
+  project                     = var.project
+  region                      = var.region
+  account_id                  = data.aws_caller_identity.current.account_id
+  lake_bucket_name            = module.lakehouse.bucket_name
+  lake_bucket_arn             = module.lakehouse.bucket_arn
+  glue_database_name          = module.lakehouse.glue_database_name
+  athena_workgroup_name       = module.lakehouse.athena_workgroup_name
+  health_metrics_function_arn = module.monitoring.health_metrics_function_arn
+  source_dir                  = abspath("${path.root}/../../..")
 
   # The merge SQL has one home, awsnative/sql, same as module "medallion" above.
   sql_dir = abspath("${path.root}/../../../awsnative/sql")
