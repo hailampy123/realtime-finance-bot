@@ -712,6 +712,27 @@ resource "aws_sfn_state_machine" "merge_macro" {
         }
         Retry          = local.athena_retry
         TimeoutSeconds = var.query_timeout_seconds
+        Next           = "CollectHealthMetrics"
+      }
+
+      CollectHealthMetrics = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = var.health_metrics_function_arn
+          Payload = {
+            database  = var.glue_database_name
+            workgroup = var.athena_workgroup_name
+            tables    = ["silver_macro"]
+          }
+        }
+        Retry = [{
+          ErrorEquals     = ["States.ALL"]
+          IntervalSeconds = 10
+          MaxAttempts     = 2
+          BackoffRate     = 2.0
+        }]
+        TimeoutSeconds = 200
         End            = true
       }
     }
