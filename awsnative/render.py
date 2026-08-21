@@ -43,6 +43,8 @@ KNOWN_PLACEHOLDERS = frozenset(
         "dirty_cte",
         "projection_start_date",
         "instrument_id",
+        "table",
+        "partition_predicate",
     }
 )
 
@@ -223,3 +225,64 @@ def enrichment_statements(database: str, lookback_days: int = 1) -> dict[str, st
         ),
         MERGE_MACRO: render(read_sql(MERGE_MACRO), database=database),
     }
+
+
+# --- maintenance: OPTIMIZE and VACUUM, spec 2026-08-19 section 3 -----------
+#
+# One partition predicate per table, as a ${lookback_days}-templated
+# fragment -- rendered in two steps, same composition pattern as
+# dirty_from_bronze(): the predicate is filled in first, then spliced into
+# optimize_table.sql as a single opaque value. A table with no entry here
+# gets VACUUM only.
+OPTIMIZE_TABLE = "optimize_table.sql"
+VACUUM_TABLE = "vacuum_table.sql"
+
+MAINTENANCE_PARTITION_PREDICATES: dict[str, str] = {
+    "silver_trades": "event_ts >= current_date - interval '${lookback_days}' day",
+    "silver_trades_quarantine": (
+        "ingest_date >= date_format(current_date - interval '${lookback_days}' day, '%Y-%m-%d')"
+    ),
+    "gold_bars_1m": "window_end_ts >= current_date - interval '${lookback_days}' day",
+    "silver_perp_context": "snapshot_ts >= current_date - interval '${lookback_days}' day",
+}
+
+# Every Iceberg table under maintenance. silver_macro has no entry in
+# MAINTENANCE_PARTITION_PREDICATES above, so maintenance_statements() below
+# gives it "optimize": None -- it takes about one commit a day and has no
+# timestamp column to window a predicate on.
+MAINTAINED_TABLES = (
+    "silver_trades",
+    "silver_trades_quarantine",
+    "gold_bars_1m",
+    "silver_perp_context",
+    "silver_macro",
+)
+
+
+def maintenance_statements(
+    database: str, lookback_days: int = 1
+) -> dict[str, dict[str, str | None]]:
+    """{table: {"vacuum": sql, "optimize": sql | None}} for every maintained table.
+
+    Terraform renders the same optimize_table.sql/vacuum_table.sql with the
+    same predicates for the maintenance tail states in native_medallion and
+    native_enrichment. This function exists for tests and for running a pass
+    by hand; it is not what production executes.
+    """
+    vacuum_template = read_sql(VACUUM_TABLE)
+    optimize_template = read_sql(OPTIMIZE_TABLE)
+    result: dict[str, dict[str, str | None]] = {}
+    for table in MAINTAINED_TABLES:
+        vacuum_sql = render(vacuum_template, database=database, table=table)
+        predicate_template = MAINTENANCE_PARTITION_PREDICATES.get(table)
+        optimize_sql = None
+        if predicate_template is not None:
+            predicate = render(predicate_template, lookback_days=lookback_days)
+            optimize_sql = render(
+                optimize_template,
+                database=database,
+                table=table,
+                partition_predicate=predicate,
+            )
+        result[table] = {"vacuum": vacuum_sql, "optimize": optimize_sql}
+    return result

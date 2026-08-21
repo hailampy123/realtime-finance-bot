@@ -182,3 +182,44 @@ def test_render_raises_on_a_missing_parameter() -> None:
     """safe_substitute would leave ${database} in the query and let Athena find it."""
     with pytest.raises(KeyError):
         render.render("SELECT * FROM ${database}.t")
+
+
+def test_maintenance_statements_cover_every_maintained_table() -> None:
+    statements = render.maintenance_statements("fdai_native")
+    assert set(statements) == set(render.MAINTAINED_TABLES)
+
+
+def test_silver_macro_gets_vacuum_only() -> None:
+    """One commit a day and no timestamp column to window on -- OPTIMIZE would
+    never find anything to rewrite (design 2026-08-19 section 3.2)."""
+    statements = render.maintenance_statements("fdai_native")
+    assert statements["silver_macro"]["optimize"] is None
+    assert statements["silver_macro"]["vacuum"] is not None
+
+
+def test_maintenance_statements_are_single_statements_with_no_placeholder_left() -> None:
+    from awsnative.athena import split_statements
+
+    statements = render.maintenance_statements("fdai_native", lookback_days=2)
+    for table, kinds in statements.items():
+        for kind, sql in kinds.items():
+            if sql is None:
+                continue
+            stmts = split_statements(sql)
+            assert len(stmts) == 1, f"{table} {kind} has {len(stmts)} statements"
+            assert "${" not in sql, f"{table} {kind} still has placeholder"
+
+
+def test_optimize_predicates_reference_the_tables_own_partition_column() -> None:
+    statements = render.maintenance_statements("fdai_native")
+    assert "event_ts" in statements["silver_trades"]["optimize"]
+    assert "ingest_date" in statements["silver_trades_quarantine"]["optimize"]
+    assert "window_end_ts" in statements["gold_bars_1m"]["optimize"]
+    assert "snapshot_ts" in statements["silver_perp_context"]["optimize"]
+
+
+def test_vacuum_statement_has_no_where_clause() -> None:
+    """Retention comes from table properties, not a predicate (design 2026-08-17 section 8.3)."""
+    statements = render.maintenance_statements("fdai_native")
+    for table in render.MAINTAINED_TABLES:
+        assert "WHERE" not in statements[table]["vacuum"]
