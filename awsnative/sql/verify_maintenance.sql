@@ -21,6 +21,9 @@ FROM "silver_perp_context$$files"
 UNION ALL
 SELECT 'silver_macro', count(*), avg(file_size_in_bytes) / 1e6
 FROM "silver_macro$$files"
+UNION ALL
+SELECT 'native_health_metrics', count(*), avg(file_size_in_bytes) / 1e6
+FROM "native_health_metrics$$files"
 ORDER BY table_name;
 
 -- 2. Snapshot count and the oldest snapshot's age. A count that only grows
@@ -44,4 +47,8 @@ UNION ALL
 SELECT 'silver_macro', count(*),
        to_unixtime(current_timestamp) - to_unixtime(min(committed_at))
 FROM "silver_macro$$snapshots"
+UNION ALL
+SELECT 'native_health_metrics', count(*),
+       to_unixtime(current_timestamp) - to_unixtime(min(committed_at))
+FROM "native_health_metrics$$snapshots"
 ORDER BY table_name;

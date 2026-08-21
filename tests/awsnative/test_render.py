@@ -234,3 +234,55 @@ def test_verify_maintenance_sql_is_two_statements_over_every_maintained_table() 
     for table in render.MAINTAINED_TABLES:
         assert f"'{table}'" in statements[0]
         assert f"'{table}'" in statements[1]
+
+
+def test_native_health_metrics_is_in_ddl_files_and_maintained_tables() -> None:
+    assert "054_native_health_metrics.sql" in render.DDL_FILES
+    assert "native_health_metrics" in render.MAINTAINED_TABLES
+
+
+def test_native_health_metrics_gets_optimize_and_vacuum() -> None:
+    """Written by three state machines at up to 5-minute cadence -- it reaches
+    the small-file threshold faster than any single-writer table, so unlike
+    silver_macro it needs OPTIMIZE too."""
+    statements = render.maintenance_statements("fdai_native")
+    assert statements["native_health_metrics"]["optimize"] is not None
+    assert "metric_ts" in statements["native_health_metrics"]["optimize"]
+
+
+def test_health_metrics_select_covers_every_requested_table() -> None:
+    from awsnative.athena import split_statements
+
+    sql = render.health_metrics_select_statement("fdai_native", ["silver_trades", "gold_bars_1m"])
+    assert len(split_statements(sql)) == 1
+    assert "'silver_trades'" in sql
+    assert "'gold_bars_1m'" in sql
+    assert "UNION ALL" in sql
+
+
+def test_health_metrics_select_has_no_freshness_for_quarantine() -> None:
+    sql = render.health_metrics_select_statement("fdai_native", ["silver_trades_quarantine"])
+    assert "CAST(NULL AS bigint)" in sql and "freshness_lag_seconds" in sql
+
+
+def test_health_metrics_select_has_quarantine_rate_only_for_quarantine() -> None:
+    tables = ["silver_trades", "silver_trades_quarantine"]
+    sql = render.health_metrics_select_statement("fdai_native", tables)
+    # Count the occurrences of CAST(NULL AS double) in the SQL
+    select_part = sql[sql.find("SELECT") :]
+    null_double_count = select_part.count("CAST(NULL AS double)")
+    assert null_double_count == 1
+    assert "silver_trades_quarantine" in sql and "NULLIF(" in sql
+
+
+def test_health_metrics_select_uses_macros_vintage_date_for_freshness() -> None:
+    """Macro has no event/ingest timestamp; freshness reads off vintage_date,
+    the same column 02_freshness.sql already uses for this table."""
+    sql = render.health_metrics_select_statement("fdai_native", ["silver_macro"])
+    assert "CAST(max(vintage_date) AS TIMESTAMP)" in sql
+
+
+def test_health_metrics_select_renders_with_no_placeholder_left() -> None:
+    tables = list(render.HEALTH_METRICS_TIER)
+    sql = render.health_metrics_select_statement("fdai_native", tables, lookback_days=2)
+    assert "${" not in sql

@@ -65,7 +65,8 @@ def test_silver_partitioning_matches_the_dirty_partition_unit() -> None:
 
 
 # Every table a MERGE writes to. Iceberg is what MERGE needs; a table that is only
-# ever read does not need it and pays for it in metadata (D1/D2).
+# ever read does not need it and pays for it in metadata (D1/D2). native_health_metrics
+# is written by INSERT (not MERGE) but is still an Iceberg table.
 MERGE_TARGET_DDL = (
     "010_silver_trades.sql",
     "020_silver_trades_quarantine.sql",
@@ -73,6 +74,7 @@ MERGE_TARGET_DDL = (
     "040_backfill_manifest.sql",
     "052_silver_perp_context.sql",
     "053_silver_macro.sql",
+    "054_native_health_metrics.sql",
 )
 
 # Read-only sources. Staging is emptied and rewritten per run by the loader,
@@ -218,6 +220,7 @@ MAINTAINED_DDL = (
     "030_gold_bars_1m.sql",
     "052_silver_perp_context.sql",
     "053_silver_macro.sql",
+    "054_native_health_metrics.sql",
 )
 
 
@@ -225,3 +228,23 @@ def test_maintained_tables_set_vacuum_retention_properties() -> None:
     for name in MAINTAINED_DDL:
         assert "'vacuum_max_snapshot_age_seconds' = '3600'" in DDL[name], name
         assert "'vacuum_min_snapshots_to_keep'    = '5'" in DDL[name], name
+
+
+def test_native_health_metrics_is_iceberg_and_declares_every_column() -> None:
+    ddl = DDL["054_native_health_metrics.sql"]
+    assert "'table_type'        = 'ICEBERG'" in ddl
+    for column in (
+        "metric_ts",
+        "table_name",
+        "tier",
+        "row_count",
+        "file_count",
+        "avg_file_size_mb",
+        "small_file_pct",
+        "delete_file_count",
+        "snapshot_count",
+        "oldest_snapshot_age_seconds",
+        "freshness_lag_seconds",
+        "quarantine_rate_pct",
+    ):
+        assert column in columns(ddl), f"native_health_metrics missing {column}"

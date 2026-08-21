@@ -24,6 +24,7 @@ is where that distinction starts to carry weight.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from string import Template
 
@@ -45,6 +46,9 @@ KNOWN_PLACEHOLDERS = frozenset(
         "instrument_id",
         "table",
         "partition_predicate",
+        "tier",
+        "freshness_expr",
+        "quarantine_expr",
     }
 )
 
@@ -63,6 +67,7 @@ DDL_FILES = (
     "051_bronze_macro_observations.sql",
     "052_silver_perp_context.sql",
     "053_silver_macro.sql",
+    "054_native_health_metrics.sql",
 )
 
 # The three statements the micro-batch state machine runs. Terraform reads the
@@ -244,6 +249,10 @@ MAINTENANCE_PARTITION_PREDICATES: dict[str, str] = {
     ),
     "gold_bars_1m": "window_end_ts >= current_date - interval '${lookback_days}' day",
     "silver_perp_context": "snapshot_ts >= current_date - interval '${lookback_days}' day",
+    # Written by three state machines at up to 5-minute cadence -- faster
+    # than any single-writer table -- so unlike silver_macro this needs
+    # OPTIMIZE, not just VACUUM.
+    "native_health_metrics": "metric_ts >= current_date - interval '${lookback_days}' day",
 }
 
 # Every Iceberg table under maintenance. silver_macro has no entry in
@@ -256,6 +265,7 @@ MAINTAINED_TABLES = (
     "gold_bars_1m",
     "silver_perp_context",
     "silver_macro",
+    "native_health_metrics",
 )
 
 
@@ -286,3 +296,89 @@ def maintenance_statements(
             )
         result[table] = {"vacuum": vacuum_sql, "optimize": optimize_sql}
     return result
+
+
+# --- health metrics collection, spec 2026-08-19 section 4 ------------------
+HEALTH_METRICS_ROW = "health_metrics_row.sql"
+
+HEALTH_METRICS_FRESHNESS_EXPR: dict[str, str] = {
+    "silver_trades": (
+        "(SELECT to_unixtime(current_timestamp) - to_unixtime(max(event_ts)) "
+        "FROM ${database}.silver_trades)"
+    ),
+    "gold_bars_1m": (
+        "(SELECT to_unixtime(current_timestamp) - to_unixtime(max(window_end_ts)) "
+        "FROM ${database}.gold_bars_1m)"
+    ),
+    "silver_perp_context": (
+        "(SELECT to_unixtime(current_timestamp) - to_unixtime(max(snapshot_ts)) "
+        "FROM ${database}.silver_perp_context)"
+    ),
+    "silver_macro": (
+        "(SELECT to_unixtime(current_timestamp) - "
+        "to_unixtime(CAST(max(vintage_date) AS TIMESTAMP)) "
+        "FROM ${database}.silver_macro)"
+    ),
+}
+# silver_trades_quarantine and native_health_metrics have no entry: neither
+# has a meaningful "how stale is this" reading of its own (one records how
+# something else fell behind; the other IS the record of that). Their rows
+# render CAST(NULL AS bigint) instead.
+
+HEALTH_METRICS_QUARANTINE_EXPR = (
+    "(SELECT 100.0 * "
+    "(SELECT count(*) FROM ${database}.silver_trades_quarantine "
+    "WHERE ingest_date >= date_format(current_date - interval '${lookback_days}' day, '%Y-%m-%d')) "
+    "/ NULLIF((SELECT count(*) FROM ${database}.silver_trades "
+    "WHERE event_ts >= current_date - interval '${lookback_days}' day), 0))"
+)
+# Only silver_trades_quarantine's row uses this. Every other table renders
+# CAST(NULL AS double) instead.
+
+HEALTH_METRICS_TIER: dict[str, str] = {
+    "silver_trades": "fast",
+    "silver_trades_quarantine": "fast",
+    "gold_bars_1m": "fast",
+    "silver_perp_context": "fast",
+    "silver_macro": "slow",
+    "native_health_metrics": "fast",
+}
+
+
+def health_metrics_select_statement(
+    database: str, tables: Sequence[str], lookback_days: int = 1
+) -> str:
+    """One SELECT, UNION ALL across `tables`, one row of KPIs per table.
+
+    `tables` lets each state machine ask only for the tables it writes:
+    the microbatch asks for its three fast tables, merge-perp for
+    silver_perp_context, merge-macro for silver_macro. The health-metrics
+    Lambda calls this directly; Terraform never renders it, because the
+    Lambda -- not a Step Functions Athena task -- is what runs this query
+    (see the "why a Lambda here" note in awsnative/monitoring/collect.py).
+    """
+    row_template = read_sql(HEALTH_METRICS_ROW)
+    rows = []
+    for table in tables:
+        freshness_template = HEALTH_METRICS_FRESHNESS_EXPR.get(table)
+        freshness_expr = (
+            render(freshness_template, database=database)
+            if freshness_template is not None
+            else "CAST(NULL AS bigint)"
+        )
+        quarantine_expr = (
+            render(HEALTH_METRICS_QUARANTINE_EXPR, database=database, lookback_days=lookback_days)
+            if table == "silver_trades_quarantine"
+            else "CAST(NULL AS double)"
+        )
+        rows.append(
+            render(
+                row_template,
+                database=database,
+                table=table,
+                tier=HEALTH_METRICS_TIER[table],
+                freshness_expr=freshness_expr,
+                quarantine_expr=quarantine_expr,
+            )
+        )
+    return "\nUNION ALL\n".join(rows)
