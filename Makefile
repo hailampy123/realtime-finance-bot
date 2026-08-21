@@ -142,7 +142,7 @@ smoke:
 	  --password  "$$(terraform -chdir=$(DEV) output -raw sasl_password)"
 
 .PHONY: up-aws down-aws rebuild-aws preflight-aws logs-aws validate-aws
-.PHONY: ddl-aws microbatch-aws verify-aws sfn-logs-aws
+.PHONY: ddl-aws microbatch-aws verify-aws sfn-logs-aws maintenance-verify-aws
 
 NATIVE := infra/envs/native
 
@@ -224,6 +224,11 @@ verify-aws:
 	uv run --group awsnative python -m awsnative.query \
 	  --database "$(TF_DB)" --workgroup "$(TF_WG)" \
 	  --file awsnative/sql/verify_silver_gold.sql
+
+maintenance-verify-aws:
+	uv run --group awsnative python -m awsnative.query \
+	  --database "$(TF_DB)" --workgroup "$(TF_WG)" \
+	  --file awsnative/sql/verify_maintenance.sql
 
 sfn-logs-aws:
 	aws logs tail "$$(terraform -chdir=$(NATIVE) output -raw microbatch_log_group)" --follow

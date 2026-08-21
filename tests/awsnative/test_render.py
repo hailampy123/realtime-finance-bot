@@ -223,3 +223,14 @@ def test_vacuum_statement_has_no_where_clause() -> None:
     statements = render.maintenance_statements("fdai_native")
     for table in render.MAINTAINED_TABLES:
         assert "WHERE" not in statements[table]["vacuum"]
+
+
+def test_verify_maintenance_sql_is_two_statements_over_every_maintained_table() -> None:
+    from awsnative.athena import split_statements
+
+    text = (render.SQL_DIR / "verify_maintenance.sql").read_text()
+    statements = split_statements(text)
+    assert len(statements) == 2
+    for table in render.MAINTAINED_TABLES:
+        assert f"'{table}'" in statements[0]
+        assert f"'{table}'" in statements[1]
