@@ -205,3 +205,23 @@ def test_outcomes_table_declares_exactly_what_the_lambda_returns() -> None:
         **Outcome.done(archive_key="k", sha256="a", row_count=1).to_json(),
     }
     assert set(ordered_columns(DDL["043_backfill_outcomes.sql"])) == set(returned)
+
+
+# Every table under maintenance gets a bounded retention window in its own
+# DDL rather than an ALTER TABLE step after the fact (design 2026-08-17
+# section 8.3). 5 days outlives nothing here -- the sandbox is wiped weekly
+# -- so 1 hour is the deliberate choice: enough to debug a bad merge,
+# short enough that metadata never accumulates across a session.
+MAINTAINED_DDL = (
+    "010_silver_trades.sql",
+    "020_silver_trades_quarantine.sql",
+    "030_gold_bars_1m.sql",
+    "052_silver_perp_context.sql",
+    "053_silver_macro.sql",
+)
+
+
+def test_maintained_tables_set_vacuum_retention_properties() -> None:
+    for name in MAINTAINED_DDL:
+        assert "'vacuum_max_snapshot_age_seconds' = '3600'" in DDL[name], name
+        assert "'vacuum_min_snapshots_to_keep'    = '5'" in DDL[name], name

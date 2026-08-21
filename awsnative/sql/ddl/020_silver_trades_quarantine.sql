@@ -41,5 +41,7 @@ LOCATION '${warehouse}silver_trades_quarantine/'
 TBLPROPERTIES (
     'table_type'        = 'ICEBERG',
     'format'            = 'parquet',
-    'write_compression' = 'snappy'
+    'write_compression' = 'snappy',
+    'vacuum_max_snapshot_age_seconds' = '3600',
+    'vacuum_min_snapshots_to_keep'    = '5'
 )
