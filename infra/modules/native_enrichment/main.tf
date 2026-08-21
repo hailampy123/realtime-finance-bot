@@ -49,6 +49,30 @@ locals {
     MaxAttempts     = 3
     BackoffRate     = 2.0
   }]
+
+  # --- maintenance SQL, spec 2026-08-19 section 3 ---------------------------
+  #
+  # silver_perp_context takes 5-minute commits like the trade tables, so it
+  # gets the same hourly-OPTIMIZE/daily-VACUUM treatment. silver_macro takes
+  # about one commit a day and gets VACUUM only, added directly in the macro
+  # state machine below with no clock gate: at that cadence, "once per
+  # execution" already IS "once a day."
+  perp_maintenance_predicate = "snapshot_ts >= current_date - interval '${var.merge_lookback_days}' day"
+
+  optimize_sql = {
+    silver_perp_context = templatefile("${var.sql_dir}/optimize_table.sql", {
+      database            = var.glue_database_name
+      table               = "silver_perp_context"
+      partition_predicate = local.perp_maintenance_predicate
+    })
+  }
+
+  vacuum_sql = {
+    for table in ["silver_perp_context", "silver_macro"] : table => templatefile("${var.sql_dir}/vacuum_table.sql", {
+      database = var.glue_database_name
+      table    = table
+    })
+  }
 }
 
 # The package is awsnative/enrichment plus the namespace __init__, and nothing
@@ -530,7 +554,67 @@ resource "aws_sfn_state_machine" "merge_perp" {
         }
         Retry          = local.athena_retry
         TimeoutSeconds = var.query_timeout_seconds
-        End            = true
+        Next           = "DeriveMaintenanceClock"
+      }
+
+      DeriveMaintenanceClock = {
+        Type = "Pass"
+        Parameters = {
+          "hour.$"   = "States.ArrayGetItem(States.StringSplit(States.ArrayGetItem(States.StringSplit($$.Execution.StartTime, 'T'), 1), ':'), 0)"
+          "minute.$" = "States.ArrayGetItem(States.StringSplit(States.ArrayGetItem(States.StringSplit($$.Execution.StartTime, 'T'), 1), ':'), 1)"
+        }
+        ResultPath = "$.clock"
+        Next       = "IsTopOfHour"
+      }
+
+      IsTopOfHour = {
+        Type = "Choice"
+        Choices = [{
+          Variable     = "$.clock.minute"
+          StringEquals = "00"
+          Next         = "OptimizeSilverPerpContext"
+        }]
+        Default = "MaintenanceDone"
+      }
+
+      OptimizeSilverPerpContext = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.optimize_sql["silver_perp_context"]
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        Next           = "IsTopOfDay"
+      }
+
+      IsTopOfDay = {
+        Type = "Choice"
+        Choices = [{
+          Variable     = "$.clock.hour"
+          StringEquals = "00"
+          Next         = "VacuumSilverPerpContext"
+        }]
+        Default = "MaintenanceDone"
+      }
+
+      VacuumSilverPerpContext = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.vacuum_sql["silver_perp_context"]
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        Next           = "MaintenanceDone"
+      }
+
+      MaintenanceDone = {
+        Type = "Succeed"
       }
     }
   })
@@ -582,6 +666,22 @@ resource "aws_sfn_state_machine" "merge_macro" {
         Resource = "arn:aws:states:::athena:startQueryExecution.sync"
         Parameters = {
           QueryString           = local.merge_macro
+          WorkGroup             = var.athena_workgroup_name
+          QueryExecutionContext = { Database = var.glue_database_name }
+        }
+        Retry          = local.athena_retry
+        TimeoutSeconds = var.query_timeout_seconds
+        Next           = "VacuumSilverMacro"
+      }
+
+      # No hour/minute gate: this state machine already runs once a day, on
+      # the same schedule as the macro poll (design 2026-08-19 section 3.2),
+      # so one VACUUM per execution already is the daily cadence.
+      VacuumSilverMacro = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::athena:startQueryExecution.sync"
+        Parameters = {
+          QueryString           = local.vacuum_sql["silver_macro"]
           WorkGroup             = var.athena_workgroup_name
           QueryExecutionContext = { Database = var.glue_database_name }
         }
