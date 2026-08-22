@@ -20,3 +20,4 @@ infra/**/.terraform.lock.hcl
 infra/**/.ssh/
 *.pem
 .vscode/
+wipe_backup_*/
